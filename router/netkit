@@ -243,6 +243,18 @@ gen_dns() {
   ok "dnsmasq: $(lines "$CFG/domains.list" | wc -l) проксируемых доменов в наборы"
 }
 
+# ---------- IPv6 на LAN: гасим, чтобы не текло мимо IPv4-ноды ----------
+gen_ipv6() {
+  [ "${LAN_IPV6:-disabled}" = disabled ] || { ok "IPv6 на LAN не трогаю (LAN_IPV6=keep)"; return 0; }
+  uci -q set dhcp.lan.ra='disabled'
+  uci -q set dhcp.lan.dhcpv6='disabled'
+  uci -q set dhcp.lan.ndp='disabled'
+  uci -q delete network.lan.ip6assign 2>/dev/null || true
+  uci commit dhcp; uci commit network
+  /etc/init.d/odhcpd restart 2>/dev/null || true
+  ok "IPv6 на LAN отключён (нет утечек заблокированных сайтов мимо ноды)"
+}
+
 # ---------- QUIC-блок (чтобы плееры откатывались на пробитый TCP) ----------
 gen_quic() {
   uci -q delete firewall.netkit_quic 2>/dev/null || true
@@ -369,6 +381,7 @@ cmd_install() {
   ensure_deps || { err "останавливаюсь — сначала почини зависимости"; return 1; }
   if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
   gen_quic
+  gen_ipv6
   deploy_scripts
   [ "$GEOBLOCK_ENABLE" = 1 ] && { say "тяну geoblock-список (первый раз)"; /usr/sbin/geoblock-update || warn "geoblock не скачался, попробуй позже: netctl geoblock update"; }
   [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
@@ -378,6 +391,7 @@ cmd_install() {
 cmd_apply() {
   if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
   gen_quic
+  gen_ipv6
   deploy_scripts
   [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
   fw4 reload >/dev/null 2>&1 || true
@@ -534,6 +548,11 @@ cmd_doctor() {
     rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk '/^Address/{print $NF}' | grep -v '#' | grep '\.' | tail -1)
     [ -n "$rip" ] && ok "www.vtb.ru → $rip (РФ-резолв работает)" || err "www.vtb.ru не резолвится — проверь split-ru.list / $RU_DNS"
   fi
+  echo
+  say "IPv6-утечка (заблок. сайты мимо ноды через v6)"
+  if [ "${LAN_IPV6:-disabled}" = disabled ]; then
+    ra=$(uci -q get dhcp.lan.ra); [ "$ra" = disabled ] && ok "IPv6 на LAN отключён — утечки нет" || warn "LAN_IPV6=disabled, но dhcp.lan.ra='$ra' — примени: netctl apply"
+  else warn "LAN_IPV6=keep — v6 включён, возможны утечки заблок. сайтов мимо ноды"; fi
   echo
   say "geoblock-список: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0) доменов, крон/сторож:"
   grep -q geoblock-update /etc/crontabs/root 2>/dev/null && ok "geoblock-update в кроне" || warn "geoblock-update не в кроне"
