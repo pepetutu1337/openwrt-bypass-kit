@@ -36,7 +36,7 @@ echo
 if [ "$miss" = 0 ]; then
   echo ":: всё синхронно — роутер знает ноды, которыми Happ пользуется сейчас."
 else
-  echo ":: Happ нашёл ноду, которой у роутера нет. Как обновить:"
-  echo "   1) в Happ у нужного сервера — «Поделиться» / «Share» → скопируй vless:// ссылку"
-  echo "   2) netctl nodes add-url 'vless://...'   (или впиши в config/nodes.list + netctl apply)"
+  echo ":: Happ нашёл ноду, которой у роутера нет. Как обновить (в Happ → Поделиться/Экспорт):"
+  echo "   • дал ссылку:  netctl nodes add-url 'vless://...'"
+  echo "   • дал JSON:    netctl nodes add-json путь/к/файлу"
 fi

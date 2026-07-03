@@ -85,6 +85,18 @@ case "$cmd" in
         esac
       done
       echo ":: применяю на роутер…"; push_config; $SSH "netkit apply"
+    elif [ "${1:-}" = add-json ]; then
+      shift
+      [ $# -gt 0 ] || { echo "netctl nodes add-json <файл из Happ>  (Happ часто отдаёт JSON, не ссылку)"; exit 1; }
+      urls=$("$KIT_DIR/tools/xray-json-to-vless.sh" "$@")
+      [ -n "$urls" ] || { echo "  ✗ в JSON не нашлось vless-нод (тот ли файл?)"; exit 1; }
+      before=$(grep -c . "$KIT_DIR/config/nodes.list" 2>/dev/null || echo 0)
+      printf '%s\n' "$urls" | while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        grep -qF "$u" "$KIT_DIR/config/nodes.list" 2>/dev/null || printf '%s\n' "$u" >> "$KIT_DIR/config/nodes.list"
+      done
+      echo "  нод в JSON: $(printf '%s\n' "$urls" | grep -c .), добавлено новых: $(( $(grep -c . "$KIT_DIR/config/nodes.list") - before ))"
+      echo ":: применяю на роутер…"; push_config; $SSH "netkit apply"
     else
       $SSH "netkit nodes $*"
     fi ;;
@@ -110,6 +122,7 @@ netctl — пульт к OpenWrt-киту (обход блокировок).
   netctl nodes test         прогнать все ноды на живость + выходной IP
   netctl nodes use 3        закрепить ноду №3 основной
   netctl nodes add-url 'vless://…'   добавить ноду по ссылке (из Happ «Поделиться»)
+  netctl nodes add-json <файл>       добавить ноды из xray-JSON (Happ часто отдаёт JSON)
 
   netctl zapret on|off|edit|check
   netctl proxy  on|off
