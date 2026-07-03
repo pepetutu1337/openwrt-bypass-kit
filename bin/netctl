@@ -1,0 +1,110 @@
+#!/bin/sh
+# ============================================================
+#  netctl — управление китом с компа (Linux / macOS).
+#  Тонкая обёртка: заливает конфиг на роутер по SSH и дёргает netkit.
+#  Windows-версия: bin/netctl.cmd (то же самое).
+# ============================================================
+set -eu
+
+KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CONF="$KIT_DIR/config/kit.conf"
+[ -f "$CONF" ] || { echo "Нет $CONF — скопируй из репозитория и правь под себя."; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+SSH_KEY_OPT=""
+[ -n "${ROUTER_SSH_KEY:-}" ] && SSH_KEY_OPT="-i $ROUTER_SSH_KEY"
+SSH="ssh $SSH_KEY_OPT -p ${ROUTER_SSH_PORT:-22} -o ConnectTimeout=8 ${ROUTER_SSH_USER}@${ROUTER_IP}"
+SCP="scp $SSH_KEY_OPT -P ${ROUTER_SSH_PORT:-22} -q"
+DEST="${ROUTER_SSH_USER}@${ROUTER_IP}"
+
+push_config() {
+  echo ":: заливаю конфиг на роутер ($ROUTER_IP)…"
+  $SSH 'mkdir -p /etc/netkit'
+  $SCP "$KIT_DIR"/config/kit.conf \
+       "$KIT_DIR"/config/nodes.list \
+       "$KIT_DIR"/config/domains.list \
+       "$KIT_DIR"/config/ru-split.list \
+       "$KIT_DIR"/config/telegram-cidr.list \
+       "$KIT_DIR"/config/zapret.conf \
+       "$DEST":/etc/netkit/
+  $SCP "$KIT_DIR"/router/netkit "$DEST":/usr/sbin/netkit
+  $SSH 'chmod +x /usr/sbin/netkit'
+}
+
+pull_config() {
+  echo ":: тяну текущий конфиг с роутера в локальные файлы…"
+  for f in nodes.list domains.list ru-split.list telegram-cidr.list zapret.conf; do
+    $SCP "$DEST":/etc/netkit/"$f" "$KIT_DIR"/config/"$f" && echo "  <- $f"
+  done
+}
+
+preflight() {
+  echo ":: предполётная проверка"
+  fail=0
+  case "$ROUTER_IP" in ""|"192.168.1.1") : ;; esac
+  [ -n "$ROUTER_IP" ] || { echo "  ✗ ROUTER_IP не задан в config/kit.conf"; fail=1; }
+  # нода задана?
+  if ! grep -qE '^[[:space:]]*vless://' "$KIT_DIR/config/nodes.list" 2>/dev/null; then
+    echo "  ! в config/nodes.list нет ни одной vless:// ноды —"
+    echo "    прокси-часть работать не будет (zapret будет). Вставь свои ноды и повтори."
+  else echo "  ✓ ноды заданы ($(grep -cE '^[[:space:]]*vless://' "$KIT_DIR/config/nodes.list"))"; fi
+  # SSH достаём?
+  if $SSH 'echo ok' >/dev/null 2>&1; then echo "  ✓ SSH до $ROUTER_IP работает"
+  else
+    echo "  ✗ не достучаться по SSH до ${ROUTER_SSH_USER}@${ROUTER_IP}:${ROUTER_SSH_PORT}"
+    echo "    закинь ключ:  ssh-copy-id -p ${ROUTER_SSH_PORT} ${ROUTER_SSH_USER}@${ROUTER_IP}"
+    fail=1
+  fi
+  # интернет на роутере (для докачки пакетов/списков)?
+  if $SSH 'ping -c1 -W2 1.1.1.1 >/dev/null 2>&1' 2>/dev/null; then echo "  ✓ у роутера есть интернет"
+  else echo "  ! у роутера, похоже, нет интернета — установка пакетов/списков может не пройти"; fi
+  [ "$fail" = 0 ] || { echo ":: останавливаюсь, почини ✗ выше"; exit 1; }
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  install)  preflight; push_config; $SSH "netkit install" ;;
+  apply)    push_config; $SSH "netkit apply" ;;
+  push)     push_config ;;
+  pull)     pull_config ;;
+  status)   $SSH "netkit status" ;;
+  doctor)   $SSH "netkit doctor ${*:-}" ;;
+  logs)     $SSH "netkit logs ${*:-}" ;;
+  domains)  $SSH "netkit domains $*" ;;
+  nodes)    $SSH "netkit nodes $*" ;;
+  zapret)   $SSH "netkit zapret $*" ;;
+  proxy)    $SSH "netkit proxy $*" ;;
+  geoblock) $SSH "netkit geoblock $*" ;;
+  ssh)      exec $SSH ;;                       # быстрый шелл на роутер
+  help|-h|--help|"")
+    cat <<EOF
+netctl — пульт к OpenWrt-киту (обход блокировок).
+
+  netctl install            первичная установка на чистый OpenWrt
+  netctl apply              залить локальный конфиг и перезагрузить сервисы
+  netctl status             что запущено, состояние сервисов
+  netctl doctor [домен]     полный чекап (DNS, прокси, выходной IP, гео)
+  netctl logs [sing-box|zapret|dns]
+
+  netctl domains list                   показать проксируемые домены
+  netctl domains add depop.com ebay.com добавить (сразу применяется)
+  netctl domains rm  depop.com          убрать
+
+  netctl nodes list         список нод и какая активна
+  netctl nodes test         прогнать все ноды на живость + выходной IP
+  netctl nodes use 3        закрепить ноду №3 основной
+
+  netctl zapret on|off|edit|check
+  netctl proxy  on|off
+  netctl geoblock update|on|off|count   авто-список ушедших из РФ сервисов
+
+  netctl pull               забрать текущий конфиг с роутера в ./config (для git/бэкапа)
+  netctl push               только залить конфиг, без перезапуска
+  netctl ssh                открыть шелл на роутере
+
+Конфиг: config/kit.conf, config/nodes.list, config/domains.list …
+EOF
+    ;;
+  *) echo "Неизвестная команда: $cmd (см. netctl help)"; exit 1 ;;
+esac

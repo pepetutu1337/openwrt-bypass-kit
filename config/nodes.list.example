@@ -1,0 +1,17 @@
+# ============================================================
+#  nodes.list — твои прокси-серверы (VLESS-Reality и совместимые).
+#  По одной vless:// ссылке на строку. Строки с # игнорируются.
+#
+#  ПЕРВАЯ рабочая нода = основная (primary).
+#  Остальные попадают в failover-пул (если FAILOVER=1 в kit.conf).
+#
+#  Такие ссылки даёт почти любой VLESS-провайдер ("поделиться" / "share").
+#  Поддерживаются: reality поверх tcp (flow=xtls-rprx-vision) и reality+grpc.
+#
+#  Формат для справки:
+#  vless://UUID@HOST:PORT?security=reality&pbk=PUBKEY&sni=SNI&sid=SHORTID&fp=chrome&flow=xtls-rprx-vision&type=tcp#Имя
+#  vless://UUID@HOST:PORT?security=reality&pbk=PUBKEY&sni=SNI&fp=chrome&type=grpc&serviceName=vless#Имя-grpc
+# ============================================================
+
+# vless://00000000-1111-2222-3333-444444444444@1.2.3.4:52250?security=reality&pbk=YOURPUBKEY&sni=cdnjs.cloudflare.com&fp=chrome&flow=xtls-rprx-vision&type=tcp#PL-Primary
+# vless://00000000-1111-2222-3333-444444444444@5.6.7.8:52250?security=reality&pbk=YOURPUBKEY&sni=cdnjs.cloudflare.com&fp=chrome&flow=xtls-rprx-vision&type=tcp#DE-Backup

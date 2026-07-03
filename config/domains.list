@@ -1,0 +1,107 @@
+# ============================================================
+#  domains.list — домены, которые ходят ЧЕРЕЗ прокси-ноду.
+#  Один домен на строку (без http://, без www — поддомены цепляются сами).
+#  # — комментарий. Группы для удобства, движку они безразличны.
+#
+#  Управлять можно и руками (правь файл + `netctl apply`),
+#  и командами:  netctl domains add depop.com
+#                netctl domains rm  depop.com
+#                netctl domains list
+#
+#  ВАЖНО: YouTube сюда НЕ добавляй — им занимается zapret,
+#  гнать видео через ноду только замедлит.
+# ============================================================
+
+# --- ИИ / нейросети ---
+openai.com
+chatgpt.com
+oaistatic.com
+oaiusercontent.com
+anthropic.com
+claude.ai
+claude.com
+
+# --- соцсети / мессенджеры ---
+instagram.com
+cdninstagram.com
+fbcdn.net
+facebook.com
+facebook.net
+fbsbx.com
+fb.com
+fbwat.ch
+meta.com
+x.com
+twitter.com
+twimg.com
+t.co
+linkedin.com
+licdn.com
+discord.com
+discordapp.com
+discordapp.net
+discord.gg
+discord.media
+discordcdn.com
+signal.org
+whispersystems.org
+whatsapp.com
+whatsapp.net
+wa.me
+snapchat.com
+snap.com
+sc-cdn.net
+viber.com
+
+# --- музыка / видео / стриминг ---
+soundcloud.com
+sndcdn.com
+spotify.com
+scdn.co
+spotifycdn.com
+twitch.tv
+ttvnw.net
+jtvnw.net
+netflix.com
+nflxvideo.net
+nflximg.net
+nflxext.com
+nflxso.net
+
+# --- маркетплейсы / шопинг ---
+depop.com
+ebay.com
+ebaystatic.com
+ebayimg.com
+ebaycdn.net
+ebaydesc.com
+
+# --- игры (Supercell: блок часто по IP игрового сервера, VPN помогает не всегда) ---
+supercell.com
+supercellid.com
+brawlstarsgame.com
+clashofclans.com
+clashroyale.com
+
+# --- продуктивность / прочее ---
+notion.so
+notion.com
+canva.com
+patreon.com
+patreonusercontent.com
+paypal.com
+paypalobjects.com
+
+# --- TikTok / ByteDance (нужен и DoH, DNS у них травят) ---
+tiktok.com
+tiktokcdn.com
+tiktokv.com
+tiktokcdn-us.com
+tiktokcdn-eu.com
+ibytedtos.com
+byteoversea.com
+muscdn.com
+ttwstatic.com
+ipstatp.com
+sgpstatp.com
+byteicdn.com

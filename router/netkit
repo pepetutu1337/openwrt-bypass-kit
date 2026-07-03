@@ -1,0 +1,564 @@
+#!/bin/sh
+# ============================================================
+#  netkit — движок кита, живёт на роутере (OpenWrt, busybox ash).
+#  Всё делает здесь; с компа его дёргает netctl по SSH.
+#  Конфиги: /etc/netkit/{kit.conf,nodes.list,domains.list,
+#                        telegram-cidr.list,zapret.conf}
+# ============================================================
+set -eu
+export LC_ALL=C
+
+CFG=/etc/netkit
+[ -f "$CFG/kit.conf" ] || { echo "нет $CFG/kit.conf (сначала netctl push/install)"; exit 1; }
+. "$CFG/kit.conf"
+[ -f "$CFG/zapret.conf" ] && . "$CFG/zapret.conf"
+
+: "${REDIRECT_PORT:=1100}"; : "${DOH_PORT:=5053}"; : "${LAN_IFACE:=br-lan}"
+: "${PROXY_ENABLE:=1}"; : "${DOH_ENABLE:=1}"; : "${ZAPRET_ENABLE:=1}"
+: "${FAILOVER:=1}"; : "${FAILOVER_INTERVAL:=15m}"; : "${BLOCK_QUIC:=1}"
+: "${DOH_UPSTREAM:=https://1.1.1.1/dns-query}"; : "${ZAPRET_VERSION:=v72.12}"
+# второй DoH-резолвер (резервирование DNS; пусто = не создавать)
+: "${DOH_UPSTREAM2:=https://8.8.8.8/dns-query}"; : "${DOH_PORT2:=5054}"
+# split-DNS: РФ-зоны через российский резолвер (чинит VTB и пр., что прячут DNS от иностранцев)
+: "${SPLIT_RU_ENABLE:=1}"; : "${RU_DNS:=77.88.8.8}"; : "${RU_DNS2:=77.88.8.1}"
+# авто-список ушедших из РФ сервисов
+: "${GEOBLOCK_ENABLE:=1}"; : "${GEOBLOCK_CRON:=15 4 * * *}"
+: "${GEOBLOCK_URL:=https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Categories/geoblock.lst}"
+# сторож нод (авто-восстановление прокси)
+: "${WATCHDOG_ENABLE:=1}"; : "${WATCHDOG_CRON:=*/3 * * * *}"
+SBOX=/etc/sing-box/config.json
+NFT=/etc/nftables.d/20-proxy.nft
+DNSD=/etc/dnsmasq.d/netkit.conf
+SPLITD=/etc/dnsmasq.d/split-ru.conf
+GEOBLOCKD=/etc/dnsmasq.d/geoblock.conf
+SOCKS_DIAG=10800; CLASH=127.0.0.1:9090; CLASH_PORT=9090
+
+say()  { printf '\033[1;36m::\033[0m %s\n' "$*"; }
+ok()   { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[1;33m!\033[0m %s\n' "$*"; }
+err()  { printf '  \033[1;31m✗\033[0m %s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+PKG=$(have apk && echo apk || echo opkg)
+pkg_add() { if [ "$PKG" = apk ]; then apk add --no-cache "$@"; else opkg update >/dev/null 2>&1; opkg install "$@"; fi; }
+
+# все НЕпустые, НЕкомментарии строки файла.
+# Комментарий — только строка целиком (# в начале); # внутри строки НЕ трогаем,
+# иначе поломаются vless://…#Имя (фрагмент с названием ноды).
+lines() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | sed 's/[[:space:]]*$//' | grep -v '^[[:space:]]*$' || true; }
+
+# ---------- зависимости: проверяет каждую и докачивает недостающее ----------
+need_pkg() {  # $1=команда/признак  $2=имя пакета  $3=описание
+  if have "$1"; then ok "$3 — есть"; return 0; fi
+  warn "$3 — нет, ставлю ($2)…"
+  if pkg_add "$2" >/dev/null 2>&1 && have "$1"; then ok "$3 — поставлен"; return 0; fi
+  err "$3 — НЕ удалось поставить ($2). Проверь интернет на роутере / фиды."; return 1
+}
+ensure_deps() {
+  say "проверяю зависимости ($PKG), недостающее докачаю"
+  [ "$PKG" = opkg ] && { opkg update >/dev/null 2>&1 || warn "opkg update не прошёл (нет инета?)"; }
+  miss=0
+  need_pkg curl curl "curl"                     || miss=1
+  need_pkg jq   jq   "jq"                        || miss=1
+  [ "$PROXY_ENABLE" = 1 ] && { need_pkg sing-box sing-box "sing-box"; [ $? = 0 ] || miss=1; }
+  if [ "$DOH_ENABLE" = 1 ] && ! have https-dns-proxy; then
+    warn "https-dns-proxy — нет, ставлю…"
+    pkg_add https-dns-proxy >/dev/null 2>&1
+    have https-dns-proxy && ok "https-dns-proxy — поставлен" || { err "https-dns-proxy — не поставился"; miss=1; }
+  else [ "$DOH_ENABLE" = 1 ] && ok "https-dns-proxy — есть"; fi
+  # dnsmasq-full нужен для nftset-наборов (обычный собран без них)
+  if dnsmasq --help 2>&1 | grep -q -- '--nftset'; then ok "dnsmasq-full (nftset) — есть"
+  else
+    warn "dnsmasq без nftset — меняю на dnsmasq-full (иначе наборы не заведутся)"
+    echo 'nameserver 1.1.1.1' > /etc/resolv.conf   # чтобы DNS не умер на время подмены
+    if [ "$PKG" = apk ]; then apk del dnsmasq 2>/dev/null || true; apk add --no-cache dnsmasq-full >/dev/null 2>&1
+    else opkg remove dnsmasq 2>/dev/null || true; opkg install dnsmasq-full >/dev/null 2>&1; fi
+    ln -sf /tmp/resolv.conf.d/resolv.conf.auto /etc/resolv.conf 2>/dev/null || ln -sf /tmp/resolv.conf /etc/resolv.conf 2>/dev/null || true
+    /etc/init.d/dnsmasq restart 2>/dev/null || true
+    dnsmasq --help 2>&1 | grep -q -- '--nftset' && ok "dnsmasq-full — поставлен" || { err "dnsmasq-full не встал"; miss=1; }
+  fi
+  [ "$miss" = 0 ] && ok "все зависимости на месте" || { err "часть зависимостей не встала — см. выше"; return 1; }
+}
+
+# ---------- один VLESS-URL → JSON-outbound для sing-box ----------
+vless_outbound() {  # $1=tag  $2=url  ->  compact JSON
+  tag="$1"; url="$2"
+  b="${url#vless://}"; b="${b%%#*}"
+  uuid="${b%%@*}"; rest="${b#*@}"
+  hp="${rest%%\?*}"; q="${rest#*\?}"; [ "$q" = "$rest" ] && q=""
+  host="${hp%%:*}"; port="${hp##*:}"
+  qp() { printf '%s' "$q" | tr '&' '\n' | sed -n "s/^$1=//p" | head -n1; }
+  sni=$(qp sni); pbk=$(qp pbk); sid=$(qp sid); fp=$(qp fp)
+  flow=$(qp flow); typ=$(qp type); svc=$(qp serviceName)
+  [ -z "$fp" ] && fp=chrome
+  case "$port" in ''|*[!0-9]*) err "нода '$tag': кривой порт '$port'"; return 1;; esac
+  jq -cn --arg tag "$tag" --arg s "$host" --argjson p "$port" --arg u "$uuid" \
+     --arg sni "$sni" --arg pbk "$pbk" --arg sid "$sid" --arg fp "$fp" \
+     --arg flow "$flow" --arg typ "$typ" --arg svc "$svc" '
+     {type:"vless",tag:$tag,server:$s,server_port:$p,uuid:$u,
+      tls:{enabled:true,server_name:$sni,
+           utls:{enabled:true,fingerprint:$fp},
+           reality:({enabled:true,public_key:$pbk} + (if $sid=="" then {} else {short_id:$sid} end))},
+      packet_encoding:"xudp"}
+     + (if ($flow=="" or $typ=="grpc") then {} else {flow:$flow} end)
+     + (if $typ=="grpc" then {transport:{type:"grpc",service_name:(if $svc=="" then "vless" else $svc end)}} else {} end)'
+}
+
+node_tags() { i=0; lines "$CFG/nodes.list" | while IFS= read -r u; do i=$((i+1)); echo "node$i"; done; }
+
+# ---------- генерация /etc/sing-box/config.json ----------
+gen_singbox() {
+  tmp=$(mktemp); : > "$tmp"; n=0
+  while IFS= read -r url; do
+    n=$((n+1)); vless_outbound "node$n" "$url" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$(lines "$CFG/nodes.list")
+EOF
+  [ "$n" -gt 0 ] || { err "в nodes.list нет ни одной ноды"; rm -f "$tmp"; return 1; }
+  tags=$(node_tags | jq -R . | jq -cs .)
+  if [ "$FAILOVER" = 1 ]; then defo=auto; else defo=node1; fi
+  mkdir -p /etc/sing-box
+  jq -n \
+    --slurpfile outs "$tmp" \
+    --argjson tags "$tags" \
+    --arg def "$defo" \
+    --argjson rport "$REDIRECT_PORT" \
+    --argjson sport "$SOCKS_DIAG" \
+    --arg interval "$FAILOVER_INTERVAL" \
+    --argjson fo "$([ "$FAILOVER" = 1 ] && echo true || echo false)" '
+    {
+      log:{level:"warn",timestamp:true},
+      experimental:{clash_api:{external_controller:"127.0.0.1:9090"}},
+      inbounds:[
+        {type:"redirect",tag:"redir",listen:"0.0.0.0",listen_port:$rport,sniff:true,sniff_override_destination:false},
+        {type:"socks",tag:"diag",listen:"127.0.0.1",listen_port:$sport}
+      ],
+      outbounds:
+        ($outs)
+        + [ {type:"selector",tag:"proxy",outbounds:(($tags)+(if $fo then ["auto"] else [] end)),default:$def} ]
+        + (if $fo then [ {type:"urltest",tag:"auto",outbounds:$tags,url:"https://www.gstatic.com/generate_204",interval:$interval,tolerance:80} ] else [] end)
+        + [ {type:"direct",tag:"direct"} ],
+      route:{
+        rules:[ {ip_is_private:true,outbound:"direct"} ],
+        final:"proxy",
+        auto_detect_interface:true
+      }
+    }' > "$SBOX"
+  rm -f "$tmp"
+  if have sing-box && ! sing-box check -c "$SBOX" 2>/tmp/sbox.err; then
+    err "sing-box забраковал конфиг:"; cat /tmp/sbox.err; return 1
+  fi
+  ok "sing-box config сгенерирован ($n нод)"
+}
+
+# ---------- nftables: наборы proxy4/proxy6 + redirect-цепочка ----------
+gen_nft() {
+  mkdir -p /etc/nftables.d
+  {
+    echo "# генерируется netkit — правь config/*, не тут"
+    echo "set proxy4 { type ipv4_addr; flags interval; auto-merge;"
+    v4=$(lines "$CFG/telegram-cidr.list" | grep -F . | grep -v : | paste -sd, - 2>/dev/null || true)
+    [ -n "$v4" ] && echo "  elements = { $v4 };"
+    echo "}"
+    echo "set proxy6 { type ipv6_addr; flags interval; auto-merge;"
+    v6=$(lines "$CFG/telegram-cidr.list" | grep -F : | paste -sd, - 2>/dev/null || true)
+    [ -n "$v6" ] && echo "  elements = { $v6 };"
+    echo "}"
+    echo "chain proxy_redirect {"
+    echo "  type nat hook prerouting priority -1; policy accept;"
+    echo "  iifname \"$LAN_IFACE\" ip  daddr @proxy4 tcp dport {80,443} redirect to :$REDIRECT_PORT"
+    echo "  iifname \"$LAN_IFACE\" ip6 daddr @proxy6 tcp dport {80,443} redirect to :$REDIRECT_PORT"
+    echo "}"
+  } > "$NFT"
+  ok "nft-набор + redirect-цепочка записаны ($NFT)"
+}
+
+# ---------- https-dns-proxy: 1-2 чистых зарубежных DoH-резолвера ----------
+_doh_instance() {  # $1=port $2=url
+  s=$(uci add https-dns-proxy https-dns-proxy)
+  uci set https-dns-proxy.$s.listen_addr='127.0.0.1'
+  uci set https-dns-proxy.$s.listen_port="$1"
+  uci set https-dns-proxy.$s.bootstrap_dns='1.1.1.1,8.8.8.8'
+  uci set https-dns-proxy.$s.resolver_url="$2"
+  uci set https-dns-proxy.$s.user='nobody'; uci set https-dns-proxy.$s.group='nogroup'
+}
+gen_doh() {
+  [ "$DOH_ENABLE" = 1 ] || return 0
+  while uci -q delete https-dns-proxy.@https-dns-proxy[0]; do :; done 2>/dev/null || true
+  _doh_instance "$DOH_PORT"  "$DOH_UPSTREAM"
+  msg="127.0.0.1:$DOH_PORT ($DOH_UPSTREAM)"
+  if [ -n "$DOH_UPSTREAM2" ] && [ -n "$DOH_PORT2" ]; then
+    _doh_instance "$DOH_PORT2" "$DOH_UPSTREAM2"
+    msg="$msg + 127.0.0.1:$DOH_PORT2 ($DOH_UPSTREAM2)"
+  fi
+  uci -q set https-dns-proxy.config.update_dnsmasq_config='-'  # не перехватывать весь DNS сами
+  uci -q set https-dns-proxy.config.force_dns='0'
+  uci commit https-dns-proxy
+  /etc/init.d/https-dns-proxy enable 2>/dev/null || true
+  /etc/init.d/https-dns-proxy restart 2>/dev/null || true
+  ok "DoH-резолверы: $msg"
+}
+
+# ---------- политика резолвера: весь DNS через чистый DoH по умолчанию ----------
+gen_dns_upstream() {
+  [ "$DOH_ENABLE" = 1 ] || return 0
+  # снимаем прежние дефолтные апстримы, ставим DoH-петли, игнорируем провайдерский resolv
+  uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null || true
+  uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$DOH_PORT"
+  [ -n "$DOH_PORT2" ] && uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$DOH_PORT2"
+  uci set dhcp.@dnsmasq[0].noresolv='1'
+  uci commit dhcp
+}
+
+# ---------- split-DNS: РФ-зоны и РФ-сервисы через российский резолвер ----------
+gen_splitdns() {
+  [ "$SPLIT_RU_ENABLE" = 1 ] || { rm -f "$SPLITD"; return 0; }
+  mkdir -p /etc/dnsmasq.d
+  {
+    echo "# генерируется netkit — РФ-зоны/сервисы через российский DNS,"
+    echo "# т.к. зарубежный DoH их не видит (VTB и пр. прячут DNS от иностранцев)."
+    lines "$CFG/ru-split.list" | while IFS= read -r z; do
+      echo "server=/$z/$RU_DNS"
+      [ -n "$RU_DNS2" ] && echo "server=/$z/$RU_DNS2"
+    done
+  } > "$SPLITD"
+  ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → $RU_DNS"
+}
+
+# ---------- dnsmasq: проксируемые домены → наборы proxy4/6 ----------
+gen_dns() {
+  mkdir -p /etc/dnsmasq.d
+  {
+    echo "# генерируется netkit — правь config/domains.list"
+    lines "$CFG/domains.list" | while IFS= read -r d; do
+      echo "nftset=/$d/4#inet#fw4#proxy4"
+      echo "nftset=/$d/6#inet#fw4#proxy6"
+    done
+  } > "$DNSD"
+  gen_dns_upstream
+  gen_splitdns
+  # заставляем dnsmasq читать нашу папку
+  uci -q set dhcp.@dnsmasq[0].confdir='/etc/dnsmasq.d'
+  uci commit dhcp
+  /etc/init.d/dnsmasq restart
+  ok "dnsmasq: $(lines "$CFG/domains.list" | wc -l) проксируемых доменов в наборы"
+}
+
+# ---------- QUIC-блок (чтобы плееры откатывались на пробитый TCP) ----------
+gen_quic() {
+  uci -q delete firewall.netkit_quic 2>/dev/null || true
+  if [ "$BLOCK_QUIC" = 1 ]; then
+    uci set firewall.netkit_quic=rule
+    uci set firewall.netkit_quic.name='netkit-block-quic'
+    uci set firewall.netkit_quic.src='lan'; uci set firewall.netkit_quic.dest='wan'
+    uci set firewall.netkit_quic.proto='udp'; uci set firewall.netkit_quic.dest_port='443'
+    uci set firewall.netkit_quic.target='REJECT'
+    ok "QUIC (udp/443 lan→wan) режется"
+  fi
+  uci commit firewall
+}
+
+# ---------- zapret ----------
+zapret_present() { [ -x /opt/zapret/init.d/openwrt/zapret ] || [ -f /opt/zapret/config ]; }
+zapret_install() {
+  zapret_present && return 0
+  say "качаю и ставлю zapret $ZAPRET_VERSION в /opt/zapret"
+  t=/tmp/zapret.tar.gz
+  curl -fL "https://github.com/bol-van/zapret/releases/download/${ZAPRET_VERSION}/zapret-${ZAPRET_VERSION}.tar.gz" -o "$t" \
+    || { err "не скачался релиз zapret — поставь вручную (см. README)"; return 1; }
+  mkdir -p /opt; tar -xzf "$t" -C /opt; mv /opt/zapret-* /opt/zapret 2>/dev/null || true
+  # ставим сервис и firewall-хук неинтерактивно
+  yes '' | /opt/zapret/install_easy.sh >/tmp/zapret-install.log 2>&1 || warn "install_easy.sh отработал с оговорками, см. /tmp/zapret-install.log"
+  ok "zapret распакован"
+}
+zapret_apply() {
+  [ "$ZAPRET_ENABLE" = 1 ] || { /etc/init.d/zapret stop 2>/dev/null || true; return 0; }
+  zapret_install || return 1
+  cfg=/opt/zapret/config
+  cp "$cfg" "$cfg.bak.$(date +%s)" 2>/dev/null || true
+  # срезаем прошлый netkit-блок
+  sed -i '/# >>> netkit/,/# <<< netkit/d' "$cfg" 2>/dev/null || true
+  {
+    echo "# >>> netkit — не редактируй руками, правь config/zapret.conf"
+    echo "NFQWS_ENABLE=1"
+    echo "NFQWS_PORTS_TCP=${ZAPRET_PORTS_TCP:-80,443}"
+    echo "NFQWS_PORTS_UDP=${ZAPRET_PORTS_UDP:-443,50000-50099}"
+    echo "MODE_FILTER=autohostlist"
+    echo "DISABLE_IPV6=1"
+    printf 'NFQWS_OPT="%s"\n' "$ZAPRET_NFQWS_OPT"
+    echo "# <<< netkit"
+  } >> "$cfg"
+  # пользовательский hostlist
+  printf '%s\n' "$ZAPRET_HOSTS" | sed '/^[[:space:]]*$/d' > /opt/zapret/ipset/zapret-hosts-user.txt
+  /etc/init.d/zapret enable 2>/dev/null || true
+  /etc/init.d/zapret restart 2>/dev/null || /opt/zapret/init.d/openwrt/zapret restart 2>/dev/null || true
+  ok "zapret настроен и перезапущен"
+}
+
+# ---------- сервисы прокси-стека ----------
+restart_proxy() {
+  [ "$PROXY_ENABLE" = 1 ] || { /etc/init.d/sing-box stop 2>/dev/null || true; return 0; }
+  /etc/init.d/sing-box enable 2>/dev/null || true
+  /etc/init.d/sing-box restart
+  fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
+  ok "sing-box перезапущен, firewall перезагружен"
+}
+
+# ---------- geoblock: авто-список ушедших из РФ сервисов ----------
+deploy_geoblock() {
+  cat > /usr/sbin/geoblock-update <<EOF
+#!/bin/sh
+# генерируется netkit. Тянет список ушедших-из-РФ сервисов в наборы proxy4/6.
+set -eu
+URL="$GEOBLOCK_URL"
+OUT="$GEOBLOCKD"
+TMP=/tmp/geoblock.lst
+log() { logger -t geoblock "\$*"; echo "\$*"; }
+curl -fsSL -m 40 "\$URL" -o "\$TMP" 2>/dev/null || { log "download FAILED, оставляю старый список"; exit 1; }
+n=\$(grep -cE '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" || echo 0)
+[ "\$n" -ge 100 ] || { log "список подозрительно мал (\$n), откат"; exit 1; }
+tmpc=\$(mktemp)
+grep -E '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" | sort -u | while IFS= read -r d; do
+  printf 'nftset=/%s/4#inet#fw4#proxy4\n' "\$d"
+  printf 'nftset=/%s/6#inet#fw4#proxy6\n' "\$d"
+done > "\$tmpc"
+[ -f "\$OUT" ] && cp "\$OUT" "\$OUT.bak"
+mv "\$tmpc" "\$OUT"
+if /etc/init.d/dnsmasq restart 2>/dev/null && sleep 2 && pgrep -x dnsmasq >/dev/null; then
+  log "geoblock обновлён: \$n доменов"
+else
+  log "dnsmasq не поднялся — откат"; [ -f "\$OUT.bak" ] && mv "\$OUT.bak" "\$OUT" || rm -f "\$OUT"
+  /etc/init.d/dnsmasq restart 2>/dev/null || true; exit 1
+fi
+EOF
+  chmod +x /usr/sbin/geoblock-update
+  cron_line "/usr/sbin/geoblock-update" "$GEOBLOCK_CRON" "$GEOBLOCK_ENABLE"
+}
+
+# ---------- сторож нод: авто-восстановление прокси ----------
+deploy_watchdog() {
+  cat > /usr/sbin/proxy-watchdog <<EOF
+#!/bin/sh
+# генерируется netkit. Если прокси-нода упала — форсирует пересбор (restart sing-box).
+API="http://127.0.0.1:$CLASH_PORT/proxies/auto/delay?url=https://www.gstatic.com/generate_204&timeout=8000"
+check() { curl -s -m 12 "\$API" 2>/dev/null | grep -q '"delay"'; }
+if check; then exit 0; fi
+sleep 3; if check; then exit 0; fi
+logger -t proxy-watchdog "нода не отвечает — перезапускаю sing-box"
+/etc/init.d/sing-box restart 2>/dev/null; sleep 6
+check && logger -t proxy-watchdog "восстановлено" || logger -t proxy-watchdog "живой ноды нет (все недоступны?)"
+EOF
+  chmod +x /usr/sbin/proxy-watchdog
+  cron_line "/usr/sbin/proxy-watchdog" "$WATCHDOG_CRON" "$WATCHDOG_ENABLE"
+}
+
+# добавить/убрать строку крона (идемпотентно)
+cron_line() {  # $1=команда $2=расписание $3=вкл(1/0)
+  cr=/etc/crontabs/root; mkdir -p /etc/crontabs; touch "$cr"
+  grep -vF "$1" "$cr" > "$cr.tmp" 2>/dev/null || true; mv "$cr.tmp" "$cr"
+  [ "$3" = 1 ] && echo "$2 $1" >> "$cr"
+  /etc/init.d/cron enable 2>/dev/null || true; /etc/init.d/cron restart 2>/dev/null || true
+}
+
+deploy_scripts() {
+  deploy_geoblock; ok "geoblock-update развёрнут (крон: ${GEOBLOCK_CRON})"
+  [ "$PROXY_ENABLE" = 1 ] && { deploy_watchdog; ok "proxy-watchdog развёрнут (крон: ${WATCHDOG_CRON})"; }
+}
+
+# =================== КОМАНДЫ ===================
+cmd_install() {
+  ensure_deps || { err "останавливаюсь — сначала почини зависимости"; return 1; }
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
+  gen_quic
+  deploy_scripts
+  [ "$GEOBLOCK_ENABLE" = 1 ] && { say "тяну geoblock-список (первый раз)"; /usr/sbin/geoblock-update || warn "geoblock не скачался, попробуй позже: netctl geoblock update"; }
+  [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
+  fw4 reload >/dev/null 2>&1 || true
+  echo; say "готово. проверь: netctl status  и  netctl doctor"
+}
+cmd_apply() {
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
+  gen_quic
+  deploy_scripts
+  [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
+  fw4 reload >/dev/null 2>&1 || true
+  say "применено."
+}
+
+cmd_domains() {
+  act="${1:-list}"; shift 2>/dev/null || true
+  f="$CFG/domains.list"
+  case "$act" in
+    list)
+      lines "$f" | sort | awk '{printf "  %s\n",$0}'
+      echo "  ── всего: $(lines "$f" | wc -l)"
+      ;;
+    add)
+      [ $# -gt 0 ] || { err "укажи домен(ы)"; return 1; }
+      for d in "$@"; do
+        d=$(echo "$d" | sed 's#^https\?://##; s#/.*##; s/^www\.//')
+        if lines "$f" | grep -qx "$d"; then warn "$d уже есть"; else echo "$d" >> "$f"; ok "добавлен $d"; fi
+      done
+      gen_dns
+      ;;
+    rm|del|remove)
+      [ $# -gt 0 ] || { err "укажи домен(ы)"; return 1; }
+      for d in "$@"; do
+        d=$(echo "$d" | sed 's#^https\?://##; s#/.*##; s/^www\.//')
+        if lines "$f" | grep -qx "$d"; then
+          grep -vxF "$d" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; ok "убран $d"
+        else warn "$d не найден"; fi
+      done
+      gen_dns
+      ;;
+    *) err "domains: list | add <d…> | rm <d…>";;
+  esac
+}
+
+_clash_switch() { curl -s -X PUT "http://$CLASH/proxies/proxy" -d "{\"name\":\"$1\"}" >/dev/null 2>&1; }
+_exit_ip() { curl -s -m 8 --socks5-hostname 127.0.0.1:$SOCKS_DIAG https://ipinfo.io/json 2>/dev/null; }
+
+cmd_nodes() {
+  act="${1:-list}"; shift 2>/dev/null || true
+  case "$act" in
+    list)
+      i=0
+      lines "$CFG/nodes.list" | while IFS= read -r u; do
+        i=$((i+1)); name="${u##*#}"; [ "$name" = "$u" ] && name="(без имени)"
+        host="${u#*@}"; host="${host%%:*}"
+        printf "  node%-2s  %-22s %s\n" "$i" "$host" "$name"
+      done
+      cur=$(curl -s -m 4 "http://$CLASH/proxies/proxy" 2>/dev/null | jq -r '.now // empty' 2>/dev/null || true)
+      [ -n "$cur" ] && echo "  ── активна сейчас: $cur"
+      ;;
+    test)
+      have jq || { err "нужен jq"; return 1; }
+      cur=$(curl -s -m 4 "http://$CLASH/proxies/proxy" 2>/dev/null | jq -r '.now // "auto"')
+      i=0
+      for t in $(node_tags); do
+        i=$((i+1))
+        _clash_switch "$t"; sleep 1
+        j=$(_exit_ip)
+        if [ -n "$j" ]; then
+          ip=$(echo "$j" | jq -r '.ip'); loc=$(echo "$j" | jq -r '"\(.city // "?"), \(.country // "?")"')
+          printf "  %-7s \033[1;32mOK\033[0m  %-15s %s\n" "$t" "$ip" "$loc"
+        else
+          printf "  %-7s \033[1;31m—\033[0m   недоступна\n" "$t"
+        fi
+      done
+      _clash_switch "$cur"
+      ;;
+    use)
+      n="${1:-}"; case "$n" in ''|*[!0-9]*) err "netkit nodes use <номер>"; return 1;; esac
+      _clash_switch "node$n" && ok "закреплена node$n" || err "не вышло (sing-box запущен? нода есть?)"
+      ;;
+    *) err "nodes: list | test | use <N>";;
+  esac
+}
+
+cmd_zapret() {
+  case "${1:-}" in
+    on)  ZAPRET_ENABLE=1; zapret_apply;;
+    off) /etc/init.d/zapret stop 2>/dev/null; /etc/init.d/zapret disable 2>/dev/null; ok "zapret выключен";;
+    check)
+      say "blockcheck (сначала глушу zapret, чтобы не мешал)"
+      /etc/init.d/zapret stop 2>/dev/null || true
+      [ -x /opt/zapret/blockcheck.sh ] && /opt/zapret/blockcheck.sh || err "нет /opt/zapret/blockcheck.sh"
+      zapret_apply;;
+    edit) ${EDITOR:-vi} "$CFG/zapret.conf"; warn "не забудь: netctl apply (правки локальны, залей на роутер)";;
+    *) err "zapret: on | off | check | edit";;
+  esac
+}
+
+cmd_geoblock() {
+  case "${1:-}" in
+    update|"") /usr/sbin/geoblock-update 2>/dev/null || { deploy_geoblock; /usr/sbin/geoblock-update; };;
+    on)  GEOBLOCK_ENABLE=1; deploy_geoblock; /usr/sbin/geoblock-update;;
+    off) cron_line "/usr/sbin/geoblock-update" "$GEOBLOCK_CRON" 0; rm -f "$GEOBLOCKD"; /etc/init.d/dnsmasq restart 2>/dev/null; ok "geoblock выключен";;
+    count) echo "  доменов в geoblock: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0)";;
+    *) err "geoblock: update | on | off | count";;
+  esac
+}
+
+cmd_proxy() {
+  case "${1:-}" in
+    on)  PROXY_ENABLE=1; gen_singbox; gen_nft; gen_doh; gen_dns; restart_proxy;;
+    off) /etc/init.d/sing-box stop 2>/dev/null; /etc/init.d/sing-box disable 2>/dev/null
+         rm -f "$NFT"; fw4 reload >/dev/null 2>&1 || true; ok "прокси выключен (zapret не тронут)";;
+    *) err "proxy: on | off";;
+  esac
+}
+
+svc_state() { if /etc/init.d/"$1" status 2>/dev/null | grep -qi running || pgrep -x "$2" >/dev/null 2>&1; then ok "$1 работает"; else err "$1 не запущен"; fi; }
+cmd_status() {
+  say "сервисы"
+  [ "$PROXY_ENABLE" = 1 ] && svc_state sing-box sing-box
+  [ "$DOH_ENABLE" = 1 ]   && svc_state https-dns-proxy https-dns-proxy
+  svc_state dnsmasq dnsmasq
+  [ "$ZAPRET_ENABLE" = 1 ] && { pgrep -x nfqws >/dev/null 2>&1 && ok "zapret (nfqws) работает" || err "zapret (nfqws) не запущен"; }
+  echo
+  say "наборы IP"
+  c4=$(nft -j list set inet fw4 proxy4 2>/dev/null | jq '[.nftables[].set.elem[]?]|length' 2>/dev/null || echo 0)
+  echo "  proxy4: ${c4:-0} элементов"
+  say "домены в прокси: $(lines "$CFG/domains.list" | wc -l),  ноды: $(lines "$CFG/nodes.list" | wc -l)"
+}
+
+cmd_doctor() {
+  test_dom="${1:-claude.ai}"
+  say "чекап (тест-домен: $test_dom)"
+  cmd_status; echo
+  say "DNS: резолвится ли $test_dom через чистый DoH"
+  ip=$(nslookup "$test_dom" 127.0.0.1 2>/dev/null | awk '/^Address/{print $NF}' | grep -v '#' | grep '\.' | tail -1)
+  if [ -n "$ip" ]; then
+    ok "$test_dom → $ip"
+    if nft get element inet fw4 proxy4 "{ $ip }" >/dev/null 2>&1; then ok "$ip лежит в наборе proxy4 (пойдёт через ноду)"
+    else err "$ip НЕ в proxy4 — домен резолвится, но не проксируется (dnsmasq/nftset?)"; fi
+  else err "не резолвится через 127.0.0.1 — проверь dnsmasq"; fi
+  echo
+  if [ "$PROXY_ENABLE" = 1 ]; then
+    say "выходной IP через активную ноду"
+    j=$(_exit_ip)
+    if [ -n "$j" ] && have jq; then
+      echo "  $(echo "$j" | jq -r '"\(.ip)  \(.city // "?"), \(.country // "?")  (\(.org // "?"))"')"
+      cc=$(echo "$j" | jq -r '.country // ""')
+      [ "$cc" = RU ] && err "выход в РФ — нода не поднялась/не выбрана" || ok "выход за рубеж — ок"
+    else err "нода не отвечает через диагностический SOCKS (sing-box/нода?)"; fi
+    echo
+  fi
+  say "QUIC-блок"
+  if [ "$BLOCK_QUIC" = 1 ]; then
+    nft list ruleset 2>/dev/null | grep -q 'netkit-block-quic\|udp dport 443.*reject' && ok "udp/443 режется" || warn "правило QUIC не найдено"
+  else warn "QUIC-блок выключен в kit.conf"; fi
+  echo
+  if [ "$SPLIT_RU_ENABLE" = 1 ]; then
+    say "split-DNS: РФ-сайт должен резолвиться (через $RU_DNS)"
+    rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk '/^Address/{print $NF}' | grep -v '#' | grep '\.' | tail -1)
+    [ -n "$rip" ] && ok "www.vtb.ru → $rip (РФ-резолв работает)" || err "www.vtb.ru не резолвится — проверь split-ru.list / $RU_DNS"
+  fi
+  echo
+  say "geoblock-список: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0) доменов, крон/сторож:"
+  grep -q geoblock-update /etc/crontabs/root 2>/dev/null && ok "geoblock-update в кроне" || warn "geoblock-update не в кроне"
+  { [ "$PROXY_ENABLE" != 1 ] || grep -q proxy-watchdog /etc/crontabs/root 2>/dev/null; } && ok "сторож нод в кроне" || warn "proxy-watchdog не в кроне"
+}
+
+cmd_logs() {
+  case "${1:-sing-box}" in
+    sing-box) logread -e sing-box | tail -40;;
+    zapret)   logread -e zapret | tail -40; pgrep -af nfqws | head -2;;
+    dns)      logread -e dnsmasq -e https-dns-proxy | tail -40;;
+    *) logread | tail -40;;
+  esac
+}
+
+case "${1:-}" in
+  install) cmd_install;;
+  apply)   cmd_apply;;
+  domains) shift; cmd_domains "$@";;
+  nodes)   shift; cmd_nodes "$@";;
+  zapret)  shift; cmd_zapret "$@";;
+  proxy)   shift; cmd_proxy "$@";;
+  geoblock) shift; cmd_geoblock "$@";;
+  status)  cmd_status;;
+  doctor)  shift; cmd_doctor "$@";;
+  logs)    shift; cmd_logs "$@";;
+  *) echo "netkit: install|apply|status|doctor|domains|nodes|zapret|proxy|geoblock|logs"; exit 1;;
+esac

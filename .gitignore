@@ -1,0 +1,9 @@
+# личные ноды/ключи — НЕ коммитить (в репо только шаблон nodes.list.example)
+config/nodes.list
+
+# локальные бэкапы/мусор
+*.bak
+*.bak.*
+*.tmp
+*~
+scratch/
