@@ -87,9 +87,17 @@ case "$cmd" in
       echo ":: применяю на роутер…"; push_config; $SSH "netkit apply"
     elif [ "${1:-}" = add-json ]; then
       shift
-      [ $# -gt 0 ] || { echo "netctl nodes add-json <файл из Happ>  (Happ часто отдаёт JSON, не ссылку)"; exit 1; }
-      urls=$("$KIT_DIR/tools/xray-json-to-vless.sh" "$@")
-      [ -n "$urls" ] || { echo "  ✗ в JSON не нашлось vless-нод (тот ли файл?)"; exit 1; }
+      CONV="$KIT_DIR/tools/xray-json-to-vless.sh"
+      if [ $# -eq 0 ]; then
+        # без аргумента — берём JSON из буфера обмена (KDE klipper), иначе из stdin
+        clip=$(qdbus org.kde.klipper /klipper getClipboardContents 2>/dev/null \
+             || qdbus6 org.kde.klipper /klipper getClipboardContents 2>/dev/null)
+        if [ -n "$clip" ]; then echo ":: беру JSON из буфера обмена"; urls=$(printf '%s' "$clip" | "$CONV" -)
+        else echo ":: вставь JSON и нажми Ctrl-D:"; urls=$("$CONV" -); fi
+      else
+        urls=$("$CONV" "$@")
+      fi
+      [ -n "$urls" ] || { echo "  ✗ vless-нод не нашлось (в буфере/файле не тот JSON?)"; exit 1; }
       before=$(grep -c . "$KIT_DIR/config/nodes.list" 2>/dev/null || echo 0)
       printf '%s\n' "$urls" | while IFS= read -r u; do
         [ -n "$u" ] || continue

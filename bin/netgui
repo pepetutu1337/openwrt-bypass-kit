@@ -1,0 +1,166 @@
+#!/bin/sh
+# ============================================================
+#  netgui — графическая оболочка (GUI) кита на zenity.
+#  Установщик-мастер + панель управления: статус, чекап, ноды (вставка
+#  ссылки/JSON из буфера), домены, geoblock. Всё поверх netctl по SSH.
+#  Запуск: bin/netgui   (нужен zenity; на KDE/GNOME работает из коробки)
+#  Ярлык на рабочий стол создаётся при первом запуске.
+# ============================================================
+KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CONF="$KIT_DIR/config/kit.conf"
+NETCTL="$KIT_DIR/bin/netctl"
+CONV="$KIT_DIR/tools/xray-json-to-vless.sh"
+TITLE="OpenWrt Bypass Kit"
+command -v zenity >/dev/null 2>&1 || { echo "нужен zenity (sudo pacman -S zenity / apt install zenity)"; exit 1; }
+[ -f "$CONF" ] || { zenity --error --text="Нет config/kit.conf"; exit 1; }
+. "$CONF"
+
+# ярлык в меню приложений (создаётся один раз)
+ensure_shortcut(){
+  d="$HOME/.local/share/applications/openwrt-bypass-kit.desktop"
+  [ -f "$d" ] && return 0
+  mkdir -p "$HOME/.local/share/applications"
+  cat > "$d" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OpenWrt Bypass Kit
+Comment=Обход блокировок: установка и управление роутером
+Exec=$KIT_DIR/bin/netgui
+Icon=network-vpn
+Terminal=false
+Categories=Network;System;
+EOF
+  chmod +x "$d"
+}
+ensure_shortcut
+
+Z(){ zenity --width=560 "$@" 2>/dev/null; }
+clip(){ qdbus org.kde.klipper /klipper getClipboardContents 2>/dev/null \
+      || qdbus6 org.kde.klipper /klipper getClipboardContents 2>/dev/null; }
+set_conf(){ # ключ значение → правит kit.conf
+  if grep -qE "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=\"$2\"|" "$CONF"
+  else printf '%s="%s"\n' "$1" "$2" >> "$CONF"; fi; }
+
+# запустить команду с «крутилкой» и показать вывод
+run_show(){ # заголовок команда...
+  hdr="$1"; shift; out=$("$@" 2>&1);
+  printf '%s\n' "$out" | Z --text-info --title="$hdr" --height=460 --width=680 --font=monospace
+}
+run_progress(){ # заголовок команда... : прогресс-пульс, потом итог
+  hdr="$1"; shift; tmp=$(mktemp)
+  ( "$@" >"$tmp" 2>&1; echo $? >"$tmp.rc" ) &
+  pid=$!
+  ( while kill -0 $pid 2>/dev/null; do echo "# $(tail -n1 "$tmp" 2>/dev/null | cut -c1-70)"; sleep 1; done ) \
+    | Z --progress --pulsate --auto-close --title="$hdr" --text="Работаю…"
+  wait $pid
+  printf '%s\n' "$(cat "$tmp")" | Z --text-info --title="$hdr — готово" --height=420 --width=680 --font=monospace
+  rc=$(cat "$tmp.rc" 2>/dev/null); rm -f "$tmp" "$tmp.rc"; return "${rc:-0}"
+}
+
+# ---------- добавление нод из вставленного текста (ссылка или JSON) ----------
+add_nodes_from_text(){
+  txt="$1"; [ -n "$txt" ] || { Z --error --text="Пусто — нечего добавлять."; return 1; }
+  # JSON (xray-конфиг) или готовые vless-ссылки?
+  case "$txt" in
+    *vless://*) urls=$(printf '%s\n' "$txt" | grep -oE 'vless://[^[:space:]"]+') ;;
+    *) urls=$(printf '%s' "$txt" | "$CONV" -) ;;
+  esac
+  [ -n "$urls" ] || { Z --error --text="Не нашёл нод: это не vless-ссылка и не xray-JSON."; return 1; }
+  n=0; add=0
+  while IFS= read -r u; do [ -n "$u" ] || continue; n=$((n+1))
+    grep -qF "$u" "$KIT_DIR/config/nodes.list" 2>/dev/null || { printf '%s\n' "$u" >> "$KIT_DIR/config/nodes.list"; add=$((add+1)); }
+  done <<EOF
+$urls
+EOF
+  Z --question --title="Найдено нод: $n (новых: $add)" \
+    --text="$(printf '%s' "$urls" | sed 's/?.*#/  →  /; s/vless:\/\///' | head -12)\n\nЗалить на роутер сейчас?" \
+    --ok-label="Залить" --cancel-label="Позже" || return 0
+  run_progress "Применяю ноды" "$NETCTL" apply
+}
+
+act_addnode(){
+  pre=$(clip)
+  case "$pre" in *vless://*|*outbounds*|*vnext*) : ;; *) pre="" ;; esac  # подставим буфер только если похоже на ноду
+  txt=$(printf '%s' "$pre" | Z --text-info --editable --height=380 --width=680 \
+        --title="Добавить ноду — вставь vless://-ссылку ИЛИ JSON из Happ (Ctrl+V)") || return 0
+  add_nodes_from_text "$txt"
+}
+
+act_domains(){
+  sel=$(Z --list --radiolist --title="Домены (через ноду)" --height=320 \
+        --column="" --column="Действие" \
+        TRUE "Показать список" FALSE "Добавить домен(ы)" FALSE "Убрать домен") || return 0
+  case "$sel" in
+    "Показать список") run_show "Проксируемые домены" "$NETCTL" domains list ;;
+    "Добавить домен(ы)")
+      d=$(Z --entry --title="Добавить домены" --text="Через пробел (напр. figma.com reddit.com):") || return 0
+      [ -n "$d" ] && run_progress "Добавляю домены" sh -c "$NETCTL domains add $d" ;;
+    "Убрать домен")
+      d=$(Z --entry --title="Убрать домен" --text="Домен:") || return 0
+      [ -n "$d" ] && run_progress "Убираю домен" sh -c "$NETCTL domains rm $d" ;;
+  esac
+}
+
+# ---------- мастер установки ----------
+wizard_install(){
+  vals=$(Z --forms --title="Установка на роутер" --text="Данные роутера (OpenWrt)" \
+        --add-entry="IP роутера" --add-entry="SSH-пользователь" --add-entry="SSH-порт" \
+        --separator="|") || return 0
+  ip=$(echo "$vals"|cut -d'|' -f1); usr=$(echo "$vals"|cut -d'|' -f2); prt=$(echo "$vals"|cut -d'|' -f3)
+  [ -n "$ip" ]  && set_conf ROUTER_IP "$ip"
+  [ -n "$usr" ] && set_conf ROUTER_SSH_USER "$usr"
+  [ -n "$prt" ] && set_conf ROUTER_SSH_PORT "$prt"
+  # ноды
+  if Z --question --text="Вставить ноды сейчас? (ссылка vless:// или JSON из Happ)" --ok-label="Да" --cancel-label="Пропустить"; then
+    pre=$(clip); case "$pre" in *vless://*|*vnext*) :;; *) pre="";; esac
+    txt=$(printf '%s' "$pre" | Z --text-info --editable --height=340 --width=680 --title="Вставь ноды (Ctrl+V)")
+    [ -n "$txt" ] && add_nodes_from_text_noapply "$txt"
+  fi
+  # что включить
+  feats=$(Z --list --checklist --title="Что включить" --height=340 \
+        --column="" --column="Компонент" \
+        TRUE "Прокси (sing-box)" TRUE "zapret (обход DPI)" TRUE "geoblock-список" \
+        TRUE "split-DNS для РФ" TRUE "Блок QUIC" TRUE "Погасить IPv6 на LAN" --separator="|")
+  case "$feats" in *"Прокси"*) set_conf PROXY_ENABLE 1;; *) set_conf PROXY_ENABLE 0;; esac
+  case "$feats" in *"zapret"*) set_conf ZAPRET_ENABLE 1;; *) set_conf ZAPRET_ENABLE 0;; esac
+  case "$feats" in *"geoblock"*) set_conf GEOBLOCK_ENABLE 1;; *) set_conf GEOBLOCK_ENABLE 0;; esac
+  case "$feats" in *"split-DNS"*) set_conf SPLIT_RU_ENABLE 1;; *) set_conf SPLIT_RU_ENABLE 0;; esac
+  case "$feats" in *"QUIC"*) set_conf BLOCK_QUIC 1;; *) set_conf BLOCK_QUIC 0;; esac
+  case "$feats" in *"IPv6"*) set_conf LAN_IPV6 disabled;; *) set_conf LAN_IPV6 keep;; esac
+  Z --info --text="Ставлю на $ip. Это займёт пару минут (качаются пакеты)."
+  run_progress "Установка" "$NETCTL" install
+}
+add_nodes_from_text_noapply(){
+  case "$1" in *vless://*) urls=$(printf '%s\n' "$1"|grep -oE 'vless://[^[:space:]"]+');; *) urls=$(printf '%s' "$1"|"$CONV" -);; esac
+  printf '%s\n' "$urls" | while IFS= read -r u; do [ -n "$u" ] && ! grep -qF "$u" "$KIT_DIR/config/nodes.list" 2>/dev/null && printf '%s\n' "$u" >> "$KIT_DIR/config/nodes.list"; done
+}
+
+# ---------- главное меню ----------
+. "$CONF"
+main_menu(){
+  while :; do
+    sel=$(Z --list --radiolist --title="$TITLE — $ROUTER_IP" --height=440 \
+      --text="Что делаем?" --column="" --column="Пункт" --column="Описание" \
+      TRUE  "Статус"        "что запущено и работает" \
+      FALSE "Чекап"         "глубокая проверка: DNS, нода, гео, утечки" \
+      FALSE "Добавить ноду" "вставить vless-ссылку или JSON из Happ" \
+      FALSE "Домены"        "список / добавить / убрать" \
+      FALSE "Ноды"          "список и тест на живость" \
+      FALSE "Обновить geoblock" "подтянуть список ушедших-из-РФ сервисов" \
+      FALSE "Применить"     "перезалить конфиг на роутер" \
+      FALSE "Установить"    "мастер первичной установки" \
+      FALSE "Выход"         "") || exit 0
+    case "$sel" in
+      "Статус")        run_show "Статус" "$NETCTL" status ;;
+      "Чекап")         run_progress "Чекап" "$NETCTL" doctor ;;
+      "Добавить ноду") act_addnode ;;
+      "Домены")        act_domains ;;
+      "Ноды")          run_progress "Ноды (тест живости)" "$NETCTL" nodes test ;;
+      "Обновить geoblock") run_progress "geoblock" "$NETCTL" geoblock update ;;
+      "Применить")     run_progress "Применяю" "$NETCTL" apply ;;
+      "Установить")    wizard_install ;;
+      "Выход"|"")      exit 0 ;;
+    esac
+  done
+}
+main_menu
