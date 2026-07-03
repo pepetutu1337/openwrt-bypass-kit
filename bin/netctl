@@ -72,7 +72,22 @@ case "$cmd" in
   doctor)   $SSH "netkit doctor ${*:-}" ;;
   logs)     $SSH "netkit logs ${*:-}" ;;
   domains)  $SSH "netkit domains $*" ;;
-  nodes)    $SSH "netkit nodes $*" ;;
+  nodes)
+    if [ "${1:-}" = add-url ]; then
+      shift
+      [ $# -gt 0 ] || { echo "netctl nodes add-url 'vless://…'  (ссылку бери в Happ → Поделиться)"; exit 1; }
+      for u in "$@"; do
+        case "$u" in
+          vless://*)
+            if grep -qF "$u" "$KIT_DIR/config/nodes.list" 2>/dev/null; then echo "  нода уже в nodes.list"
+            else printf '%s\n' "$u" >> "$KIT_DIR/config/nodes.list"; echo "  + добавлена в nodes.list"; fi ;;
+          *) echo "  ✗ не vless://-ссылка, пропускаю: $u" ;;
+        esac
+      done
+      echo ":: применяю на роутер…"; push_config; $SSH "netkit apply"
+    else
+      $SSH "netkit nodes $*"
+    fi ;;
   zapret)   $SSH "netkit zapret $*" ;;
   proxy)    $SSH "netkit proxy $*" ;;
   geoblock) $SSH "netkit geoblock $*" ;;
@@ -94,6 +109,7 @@ netctl — пульт к OpenWrt-киту (обход блокировок).
   netctl nodes list         список нод и какая активна
   netctl nodes test         прогнать все ноды на живость + выходной IP
   netctl nodes use 3        закрепить ноду №3 основной
+  netctl nodes add-url 'vless://…'   добавить ноду по ссылке (из Happ «Поделиться»)
 
   netctl zapret on|off|edit|check
   netctl proxy  on|off
