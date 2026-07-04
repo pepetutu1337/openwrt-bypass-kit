@@ -210,6 +210,13 @@ case "$cmd" in
   restart)
     s="${1:-}"; svc_ok "$s" || { echo "нельзя рестартить: $s"; exit 1; }
     remote "/etc/init.d/$s restart && echo \"✓ $s перезапущен\"" ;;
+  toggle)
+    s="${1:-}"; on="${2:-}"; svc_ok "$s" || { echo "нельзя переключать: $s"; exit 1; }
+    case "$on" in
+      on)  remote "/etc/init.d/$s start && echo \"✓ $s включён\"" ;;
+      off) remote "/etc/init.d/$s stop && echo \"✓ $s выключен (до рестарта роутера или обратного вкл)\"" ;;
+      *) echo "rctl toggle СЛУЖБА on|off"; exit 1 ;;
+    esac ;;
   nodes)
     case "${1:-list}" in
       list) remote "$R_NODES" ;;
@@ -304,6 +311,7 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl status                состояние сервисов, активная нода, домены, QUIC
   rctl doctor [домен]        чекап: DNS→proxy4→нода→QUIC→краны
   rctl restart sing-box|zapret|dnsmasq|https-dns-proxy
+  rctl toggle СЛУЖБА on|off  включить/выключить службу (без рестарта роутера)
   rctl nodes list|test|use ИМЯ|auto      живые ноды через clash API :9090
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)

@@ -6,49 +6,89 @@
 <title>Роутер — панель</title>
 <style>
   :root{
-    --bg:#0d1017; --panel:#141821; --panel2:#1a1f2b; --line:#252b39;
-    --txt:#e6e9ef; --muted:#8b95a7; --accent:#66c0f4; --accent-d:#2a7ab0;
-    --ok:#3fb950; --bad:#f85149; --warn:#d6a339; --con:#0a0c11; --r:14px;
+    --bg:#0b0a08; --bg2:#0f0d0a; --panel:#161310; --panel2:#1e1a15; --line:#2e2822; --line-soft:#221e19;
+    --txt:#f4efe6; --muted:#9a8f80;
+    --accent:#e8733f; --accent-2:#f6a35c; --accent-d:#c2551f; --accent-glow:rgba(232,115,63,.35);
+    --ok:#43b56b; --bad:#e5484d; --warn:#e0a838; --con:#080706; --r:14px;
+    --shadow:0 8px 28px -8px rgba(0,0,0,.55);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0; background:var(--bg); color:var(--txt);
-    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-text-size-adjust:100%}
+  body{margin:0; background:var(--bg); color:var(--txt); position:relative; isolation:isolate;
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-text-size-adjust:100%;
+    letter-spacing:.1px}
+  body::before{content:"";position:fixed; inset:-20%; z-index:-2; pointer-events:none;
+    background:
+      radial-gradient(42rem 30rem at 10% -10%, rgba(232,115,63,.18), transparent 60%),
+      radial-gradient(34rem 28rem at 105% 0%, rgba(246,163,92,.12), transparent 62%),
+      radial-gradient(46rem 30rem at 50% 118%, rgba(194,85,31,.10), transparent 65%);
+    filter:blur(2px)}
+  body::after{content:"";position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.035; mix-blend-mode:overlay;
+    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch"/></filter><rect width="100%25" height="100%25" filter="url(%23n)"/></svg>')}
   button{font-family:inherit}
   ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:#2c3444;border-radius:8px}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--accent-d)}
   header{position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-    padding:12px 18px; background:linear-gradient(180deg,#141a25,#10141c); border-bottom:1px solid var(--line)}
-  .brand{display:flex; align-items:center; gap:10px; font-weight:700; font-size:17px}
-  .brand .logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
-    background:linear-gradient(135deg,#2a7ab0,#66c0f4); font-size:16px}
-  .brand .sub{font-weight:500; font-size:12px; color:var(--muted)}
+    padding:14px 20px; background:rgba(15,13,10,.72); backdrop-filter:blur(14px) saturate(140%);
+    border-bottom:1px solid var(--line-soft)}
+  .brand{display:flex; align-items:center; gap:12px; font-weight:700; font-size:17px; position:relative}
+  .brand .logo{width:34px;height:34px;border-radius:11px;display:grid;place-items:center; position:relative;
+    background:linear-gradient(150deg,var(--accent-d),var(--accent) 55%,var(--accent-2)); font-size:16px;
+    box-shadow:0 4px 16px -3px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.25); overflow:visible}
+  .brand .logo::after{content:"";position:absolute; inset:-9px; z-index:-1; border-radius:50%;
+    background:conic-gradient(from 0deg, var(--accent), transparent 30%, var(--accent-2) 55%, transparent 85%, var(--accent));
+    filter:blur(11px); opacity:.55; animation:orbit 7s linear infinite}
+  @keyframes orbit{to{transform:rotate(360deg)}}
+  .brand .sub{font-weight:500; font-size:12px; color:var(--muted); letter-spacing:.1px}
   .router-pill{display:flex; align-items:center; gap:8px; margin-left:auto; background:var(--panel2);
     border:1px solid var(--line); color:var(--txt); padding:8px 14px; border-radius:999px; cursor:pointer;
-    font-size:14px; min-height:40px}
-  .router-pill:hover{border-color:var(--accent)}
+    font-size:14px; min-height:40px; transition:border-color .18s ease, transform .15s ease, box-shadow .18s ease}
+  .router-pill:hover{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); transform:translateY(-1px)}
   .router-pill .ip{font-weight:600}
-  .dot{width:10px;height:10px;border-radius:50%;background:#556; flex:none}
-  .dot.ok{background:var(--ok); box-shadow:0 0 0 4px rgba(63,185,80,.16)}
-  .dot.bad{background:var(--bad); box-shadow:0 0 0 4px rgba(248,81,73,.16)}
-  main{display:grid; grid-template-columns:380px 1fr; gap:16px; padding:16px; max-width:1280px; margin:0 auto}
+  .dot{width:10px;height:10px;border-radius:50%;background:#57503f; flex:none; transition:background .2s, box-shadow .2s}
+  .dot.ok{background:var(--ok); box-shadow:0 0 0 4px rgba(67,181,107,.18)}
+  .dot.bad{background:var(--bad); box-shadow:0 0 0 4px rgba(229,72,77,.18)}
+  main{display:grid; grid-template-columns:380px 1fr; gap:18px; padding:20px; max-width:1280px; margin:0 auto}
   @media(max-width:900px){ main{grid-template-columns:1fr} }
-  .col{display:flex; flex-direction:column; gap:14px; min-width:0}
-  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:14px}
-  .card h2{margin:0 0 10px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700}
+  .col{display:flex; flex-direction:column; gap:16px; min-width:0}
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2)); border:1px solid var(--line);
+    border-radius:var(--r); padding:16px; box-shadow:var(--shadow); transition:border-color .2s ease; position:relative; overflow:hidden}
+  .card::before{content:"";position:absolute; inset:0 0 auto 0; height:1px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.16) 40%,rgba(255,255,255,.16) 60%,transparent)}
+  .card:hover{border-color:var(--line-soft)}
+  .card h2{margin:0 0 12px; font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-2); font-weight:700}
   .chips{display:grid; grid-template-columns:1fr 1fr; gap:8px}
   .chip{display:flex; align-items:center; gap:9px; background:var(--panel2); border:1px solid var(--line);
-    border-radius:10px; padding:9px 11px; font-size:13.5px}
+    border-radius:10px; padding:9px 11px; font-size:13.5px; transition:border-color .15s}
+  .chip:hover{border-color:var(--line-soft)}
   .chip .dot{width:9px;height:9px}
   .chip .lbl{color:var(--muted)}
   .chip .val{margin-left:auto; font-weight:600}
+  .chip .switch{margin-left:8px}
+
+  /* --- ios-style toggle switch --- */
+  .switch{position:relative; width:34px; height:19px; flex:none; display:inline-block}
+  .switch input{position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; z-index:2}
+  .switch .track{position:absolute; inset:0; background:var(--bg2); border:1px solid var(--line);
+    border-radius:999px; transition:background .2s ease, border-color .2s ease}
+  .switch .thumb{position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%;
+    background:var(--muted); transition:transform .2s cubic-bezier(.2,.8,.2,1), background .2s ease}
+  .switch input:checked ~ .track{background:linear-gradient(135deg,var(--accent-d),var(--accent)); border-color:transparent}
+  .switch input:checked ~ .thumb{transform:translateX(15px); background:#fff}
+  .switch input:focus-visible ~ .track{outline:2px solid var(--accent); outline-offset:2px}
+  .switch input:disabled ~ .track{opacity:.4}
+  .switch input:disabled{cursor:not-allowed}
   .btn{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:48px;
     padding:0 14px; border-radius:11px; cursor:pointer; background:var(--panel2); color:var(--txt);
-    border:1px solid var(--line); font-size:15px; font-weight:600; transition:transform .05s, border-color .15s}
-  .btn:hover{border-color:var(--accent)}
-  .btn:active{transform:translateY(1px)}
+    border:1px solid var(--line); font-size:15px; font-weight:600;
+    transition:transform .12s cubic-bezier(.2,.8,.3,1), border-color .18s ease, box-shadow .18s ease, background .18s ease}
+  .btn:hover{border-color:var(--accent); transform:translateY(-1px); box-shadow:0 6px 16px -6px rgba(0,0,0,.5)}
+  .btn:active{transform:translateY(1px) scale(.99)}
   .btn:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
-  .btn.primary{background:linear-gradient(135deg,var(--accent-d),var(--accent)); border-color:transparent; color:#04121b}
+  .btn.primary{background:linear-gradient(135deg,var(--accent-d),var(--accent) 60%,var(--accent-2)); border-color:transparent;
+    color:#1a0c04; box-shadow:0 6px 20px -6px var(--accent-glow)}
+  .btn.primary:hover{box-shadow:0 8px 26px -6px var(--accent-glow); filter:brightness(1.04)}
   .btn.ghost{background:transparent}
   .btn.sm{min-height:40px; font-size:14px}
   .btn.wide{grid-column:1/-1}
@@ -58,137 +98,233 @@
   .seg{display:flex; gap:8px}
   .seg .btn{flex:1}
   .seg .lbl{align-self:center;color:var(--muted);width:84px; font-size:13px}
-  .hint{color:var(--muted); font-size:12.5px; margin:6px 0 0}
+  .hint{color:var(--muted); font-size:12.5px; margin:6px 0 0; line-height:1.6}
   .row{display:flex; gap:8px; align-items:center}
   input[type=text],textarea{width:100%; background:var(--con); color:var(--txt); border:1px solid var(--line);
-    border-radius:10px; padding:11px 12px; font-size:14px; font-family:inherit}
-  input:focus,textarea:focus{outline:none; border-color:var(--accent)}
+    border-radius:10px; padding:11px 12px; font-size:14px; font-family:inherit; transition:border-color .15s, box-shadow .15s}
+  input:focus,textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow)}
   textarea{resize:vertical; min-height:120px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px}
-  .console-wrap{display:flex; flex-direction:column; height:100%; min-height:460px}
-  .console-head{display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--panel);
+  .console-wrap{display:flex; flex-direction:column; flex:1 1 auto; min-height:460px}
+  .console-head{display:flex; align-items:center; gap:10px; padding:11px 16px; background:linear-gradient(180deg,var(--panel),var(--bg2));
     border:1px solid var(--line); border-bottom:none; border-radius:var(--r) var(--r) 0 0}
   .console-head .title{font-weight:600; font-size:14px}
-  .console-head .spin{width:16px;height:16px;border-radius:50%;border:2px solid #33405a;border-top-color:var(--accent);
+  .console-head .spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);
     animation:spin .7s linear infinite; display:none}
   .console-head.running .spin{display:block}
   @keyframes spin{to{transform:rotate(360deg)}}
   .rc{margin-left:auto; font-size:12.5px; font-weight:700; padding:3px 9px; border-radius:999px; display:none}
-  .rc.ok{display:inline;background:rgba(63,185,80,.15); color:var(--ok)}
-  .rc.bad{display:inline;background:rgba(248,81,73,.15); color:var(--bad)}
+  .rc.ok{display:inline;background:rgba(67,181,107,.15); color:var(--ok)}
+  .rc.bad{display:inline;background:rgba(229,72,77,.15); color:var(--bad)}
   .console{flex:1; overflow:auto; background:var(--con); border:1px solid var(--line); border-top:none;
-    border-radius:0 0 var(--r) var(--r); padding:12px 14px; margin:0;
-    font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; color:#c9d4e5}
-  .console .l-ok{color:#7ee787}.console .l-bad{color:#ff9b93}.console .l-warn{color:#e3c26a}
-  .console .l-mut{color:#7d8797}.console .l-hdr{color:#79c0ff; font-weight:600}
+    border-radius:0 0 var(--r) var(--r); padding:14px 16px; margin:0; box-shadow:inset 0 1px 0 rgba(255,255,255,.02);
+    font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; color:#e4dcce}
+  .console .l-ok{color:#7fd99a}.console .l-bad{color:#ff8f89}.console .l-warn{color:var(--warn)}
+  .console .l-mut{color:#8a8072}.console .l-hdr{color:var(--accent-2); font-weight:600}
   .console .placeholder{color:var(--muted)}
-  .backdrop{position:fixed; inset:0; background:rgba(4,7,12,.66); backdrop-filter:blur(3px);
+  .backdrop{position:fixed; inset:0; background:rgba(6,5,4,.72); backdrop-filter:blur(6px);
     display:none; align-items:center; justify-content:center; z-index:40; padding:16px}
   .backdrop.open{display:flex}
-  .modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; width:min(480px,100%); padding:20px}
+  .modal{background:linear-gradient(180deg,var(--panel),var(--bg2)); border:1px solid var(--line); border-radius:18px;
+    width:min(480px,100%); padding:22px; box-shadow:0 24px 60px -16px rgba(0,0,0,.7)}
   .modal h3{margin:0 0 4px; font-size:18px}
-  .modal .sub{color:var(--muted); font-size:13px; margin:0 0 16px}
+  .modal .sub{color:var(--muted); font-size:13px; margin:0 0 16px; line-height:1.6}
   .field{margin-bottom:14px}
   .field label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600}
   .modal-actions{display:flex; gap:10px; margin-top:8px}
   .modal-actions .btn{flex:1}
   .three{display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px}
-  .warn-banner{background:rgba(214,163,57,.12); border:1px solid rgba(214,163,57,.4); color:#e3c26a;
+  .warn-banner{background:rgba(224,168,56,.12); border:1px solid rgba(224,168,56,.35); color:var(--warn);
     border-radius:10px; padding:9px 12px; font-size:12.5px; margin:0 0 14px}
+
+  /* --- tabs --- */
+  .tabs{display:flex; gap:6px; padding:10px 20px 0; max-width:1280px; margin:0 auto; overflow-x:auto}
+  .tab{display:flex; align-items:center; gap:7px; padding:9px 16px; border-radius:10px 10px 0 0; cursor:pointer;
+    background:transparent; border:1px solid transparent; border-bottom:none; color:var(--muted);
+    font-size:13.5px; font-weight:600; white-space:nowrap; transition:color .15s, background .15s}
+  .tab .n{font-size:15px}
+  .tab:hover{color:var(--txt)}
+  .tab.active{background:linear-gradient(180deg,var(--panel),var(--bg2)); border-color:var(--line); color:var(--accent-2)}
+  .panel{display:none}
+  .panel.active{display:flex; flex-direction:column; gap:16px; flex:1 1 auto; min-height:0}
+
+  /* --- health orb reacting to overall status --- */
+  .brand .logo.health-bad{background:linear-gradient(150deg,#7a2a20,var(--bad) 55%,#ff8f89)}
+  .brand .logo.health-bad::after{background:conic-gradient(from 0deg, var(--bad), transparent 30%, #ff8f89 55%, transparent 85%, var(--bad))}
+
+  /* --- traffic path viz --- */
+  .path{display:flex; align-items:center; justify-content:space-between; margin:4px 0 12px; padding:14px 6px 4px}
+  .path .node{display:flex; flex-direction:column; align-items:center; gap:7px; flex:none}
+  .path .node .ic{width:34px;height:34px;border-radius:10px; display:grid; place-items:center; font-size:16px;
+    background:var(--panel2); border:1px solid var(--line)}
+  .path .node.on .ic{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow)}
+  .path .node .lb{font-size:10.5px; color:var(--muted); text-align:center; max-width:64px; line-height:1.3}
+  .path svg{flex:1; height:14px; margin:0 -2px 17px; min-width:24px}
+  .path .wire{stroke:var(--line); stroke-width:2; fill:none}
+  .path .flow{stroke:var(--accent); stroke-width:2; fill:none; stroke-dasharray:5 7; stroke-linecap:round;
+    animation:flow 1.1s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-24}}
+
+  /* --- node latency bars (replaces raw console wall for the ping list) --- */
+  .nodes-viz{display:flex; flex-direction:column; gap:3px; margin:10px 0 2px}
+  .node-row{display:grid; grid-template-columns:52px 1fr 58px; align-items:center; gap:10px; font-size:12.5px;
+    padding:5px 8px; margin:0 -8px; border-radius:8px; cursor:pointer; transition:background .12s ease}
+  .node-row:hover{background:var(--panel2)}
+  .node-row:active{background:var(--line-soft)}
+  .node-row .nm{font-weight:700; color:var(--txt)}
+  .node-row.is-active .nm{color:var(--accent-2)}
+  .node-row .nm::before{content:"";display:none}
+  .node-row.is-active .nm::before{content:"▶ ";color:var(--accent)}
+  .node-track{height:8px; border-radius:5px; background:var(--panel2); border:1px solid var(--line); overflow:hidden}
+  .node-fill{height:100%; border-radius:5px; transition:width .5s cubic-bezier(.2,.8,.2,1); box-shadow:inset 0 1px 0 rgba(255,255,255,.28)}
+  .node-fill.t-ok{background:var(--ok)}
+  .node-fill.t-mid{background:var(--warn)}
+  .node-fill.t-slow{background:var(--bad)}
+  .node-fill.t-down{background:var(--line)}
+  .node-row .ms{text-align:right; color:var(--muted); font-variant-numeric:tabular-nums}
+  .node-row.is-active .ms{color:var(--txt); font-weight:700}
+  .nodes-hint{font-size:11px; color:var(--muted); margin:0 0 4px}
+  .nodes-legend{display:flex; gap:14px; font-size:11px; color:var(--muted); margin-top:2px}
+  .nodes-legend span{display:flex; align-items:center; gap:5px}
+  .nodes-legend i{width:8px;height:8px;border-radius:50%; display:inline-block}
 </style>
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo">📡</span><div>Панель роутера<div class="sub" id="hdrModel">подключаюсь…</div></div></div>
+  <div class="brand"><span class="logo" id="hdrLogo">📡</span><div>Панель роутера<div class="sub" id="hdrModel">подключаюсь…</div></div></div>
   <button class="router-pill" id="routerPill" title="Настройки подключения">
     <span class="dot" id="hdrDot"></span><span><span class="ip" id="hdrIp">…</span></span>
     <span style="color:var(--muted)">⚙</span>
   </button>
 </header>
 
+<nav class="tabs">
+  <button class="tab active" data-tab="overview"><span class="n">◎</span> Обзор</button>
+  <button class="tab" data-tab="servers"><span class="n">📶</span> Серверы</button>
+  <button class="tab" data-tab="domains"><span class="n">🌐</span> Домены</button>
+  <button class="tab" data-tab="more"><span class="n">⋯</span> Ещё</button>
+</nav>
+
 <main>
   <div class="col">
-    <div class="card">
-      <h2>Обзор</h2>
-      <div class="chips">
-        <div class="chip"><span class="dot" data-svc="proxy"></span><span class="lbl">sing-box</span><span class="val" data-val="proxy">—</span></div>
-        <div class="chip"><span class="dot" data-svc="zapret"></span><span class="lbl">zapret</span><span class="val" data-val="zapret">—</span></div>
-        <div class="chip"><span class="dot" data-svc="dns"></span><span class="lbl">DoH</span><span class="val" data-val="dns">—</span></div>
-        <div class="chip"><span class="dot" data-svc="node"></span><span class="lbl">нода</span><span class="val" data-val="node">—</span></div>
-      </div>
-      <div class="grid2" style="margin-top:10px">
-        <button class="btn primary" data-run="status"><span class="ic">↻</span> Статус</button>
-        <button class="btn" data-run="doctor"><span class="ic">🩺</span> Чекап</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Серверы (clash API :9090)</h2>
-      <button class="btn primary wide" data-run="nodes"><span class="ic">📶</span> Все серверы + пинг</button>
-      <div class="row" style="margin-top:9px">
-        <input type="text" id="nodeUse" placeholder="имя ноды: pl, de1, ee…" style="flex:1">
-        <button class="btn sm" id="btnNodeUse" style="width:auto;padding:0 16px">Закрепить</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <input type="text" id="nodeDel" placeholder="имя ноды для удаления" style="flex:1">
-        <button class="btn sm ghost" id="btnNodeDel" style="width:auto;padding:0 16px;border-color:#5a3030;color:#f0a0a0">Удалить</button>
-      </div>
-      <button class="btn sm ghost wide" data-run="nodes-auto" style="margin-top:8px">Вернуть авто-выбор</button>
-      <button class="btn primary wide" id="btnAddNode" style="margin-top:8px"><span class="ic">＋</span> Добавить сервер (vless/JSON)</button>
-      <button class="btn wide" id="btnRotate" style="margin-top:8px"><span class="ic">🔄</span> Ротация подписки (сменился uuid)</button>
-      <p class="hint">Пингует все ноды разом (мс, ▶ = активная). «Добавить сервер» — вставь ссылку vless:// или JSON из Happ, нода впишется в config.json роутера (с бэкапом и проверкой). «Ротация» — если после обновления подписки всё отвалилось: gazvpn меняет только uuid, кнопка перепишет его во всех нодах разом.</p>
-    </div>
-
-    <div class="card">
-      <h2>Домены через ноду (uci-ipset)</h2>
-      <button class="btn sm wide" data-run="domains-list">Показать список</button>
-      <div class="row" style="margin-top:9px">
-        <input type="text" id="domAdd" placeholder="figma.com reddit.com">
-        <button class="btn sm" id="btnDomAdd" style="width:auto;padding:0 16px">Добавить</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <input type="text" id="domRm" placeholder="netflix.com">
-        <button class="btn sm ghost" id="btnDomRm" style="width:auto;padding:0 16px">Убрать</button>
-      </div>
-      <p class="hint">Добавляет в proxy4/proxy6 + чистый DoH-резолв и перезапускает dnsmasq.</p>
-    </div>
-
-    <div class="card">
-      <h2>Сервисы — перезапуск</h2>
-      <div class="grid2">
-        <button class="btn sm" data-run="restart-singbox">sing-box</button>
-        <button class="btn sm" data-run="restart-zapret">zapret</button>
-        <button class="btn sm" data-run="restart-dns">dnsmasq</button>
-        <button class="btn sm" data-run="restart-doh">https-dns-proxy</button>
+    <div class="panel active" data-panel="overview">
+      <div class="card">
+        <h2>Обзор</h2>
+        <p class="hint" style="margin-top:-6px">Как ходит твой трафик прямо сейчас — от Дека до интернета.</p>
+        <div class="path" id="pathViz">
+          <div class="node on"><span class="ic">💻</span><span class="lb">Дек</span></div>
+          <svg viewBox="0 0 100 14" preserveAspectRatio="none"><path class="wire" d="M0 7H100"/><path class="flow" d="M0 7H100"/></svg>
+          <div class="node" data-svc="zapret"><span class="ic">🛡</span><span class="lb">zapret + DoH</span></div>
+          <svg viewBox="0 0 100 14" preserveAspectRatio="none"><path class="wire" d="M0 7H100"/><path class="flow" d="M0 7H100"/></svg>
+          <div class="node" data-svc="proxy"><span class="ic">📡</span><span class="lb" data-val="node">нода</span></div>
+          <svg viewBox="0 0 100 14" preserveAspectRatio="none"><path class="wire" d="M0 7H100"/><path class="flow" d="M0 7H100"/></svg>
+          <div class="node on"><span class="ic">🌍</span><span class="lb">Интернет</span></div>
+        </div>
+        <div class="chips">
+          <div class="chip"><span class="dot" data-svc="proxy"></span><span class="lbl">sing-box</span><span class="val" data-val="proxy">—</span>
+            <label class="switch" title="Вкл/выкл прокси-туннель"><input type="checkbox" data-toggle="singbox"><span class="track"></span><span class="thumb"></span></label></div>
+          <div class="chip"><span class="dot" data-svc="zapret"></span><span class="lbl">zapret</span><span class="val" data-val="zapret">—</span>
+            <label class="switch" title="Вкл/выкл обход DPI"><input type="checkbox" data-toggle="zapret"><span class="track"></span><span class="thumb"></span></label></div>
+          <div class="chip"><span class="dot" data-svc="dns"></span><span class="lbl">DoH</span><span class="val" data-val="dns">—</span>
+            <label class="switch" title="Вкл/выкл шифрованный DNS"><input type="checkbox" data-toggle="doh"><span class="track"></span><span class="thumb"></span></label></div>
+          <div class="chip"><span class="dot" data-svc="node"></span><span class="lbl">нода</span><span class="val" data-val="node">—</span></div>
+        </div>
+        <p class="hint" style="margin-top:2px">Переключатели справа — включить/выключить саму функцию (не рестарт). «Ещё» → «Сервисы» — если завис, а не выключен.</p>
+        <div class="grid2" style="margin-top:10px">
+          <button class="btn primary" data-run="status"><span class="ic">↻</span> Статус</button>
+          <button class="btn" data-run="doctor" title="Проверка по цепочке: DNS → прокси-набор → нода → QUIC">🩺 Чекап</button>
+        </div>
+        <p class="hint">«Статус» — что сейчас включено/выключено. «Чекап» — прогоняет тестовый домен по всей цепочке и находит, где именно рвётся.</p>
       </div>
     </div>
 
-    <div class="card">
-      <h2>geoblock — ушедшие из РФ сервисы</h2>
-      <div class="grid2">
-        <button class="btn sm" data-run="geoblock-list">Показать все домены</button>
-        <button class="btn sm" data-run="geoblock-update">Обновить список</button>
+    <div class="panel" data-panel="servers">
+      <div class="card">
+        <h2>Серверы (clash API :9090)</h2>
+        <p class="hint" style="margin-top:-6px">Твой пул VPN-нод. ▶ — какая держит трафик сейчас.</p>
+        <button class="btn primary wide" data-run="nodes"><span class="ic">📶</span> Все серверы + пинг</button>
+        <p class="nodes-hint" id="nodesHint" hidden>Тапни по серверу, чтобы закрепить его — как в Happ.</p>
+        <div class="nodes-viz" id="nodesViz" hidden></div>
+        <div class="row" style="margin-top:9px">
+          <input type="text" id="nodeUse" placeholder="имя ноды: pl, de1, ee…" style="flex:1">
+          <button class="btn sm" id="btnNodeUse" style="width:auto;padding:0 16px">Закрепить</button>
+        </div>
+        <p class="hint">Закрепить = отключить авто-выбор и всегда идти через эту ноду.</p>
+        <button class="btn primary wide" id="btnAddNode" style="margin-top:8px"><span class="ic">＋</span> Добавить сервер (vless/JSON)</button>
+        <p class="hint">Вставь ссылку <code>vless://…</code> или JSON из Happ — нода впишется в config.json роутера (с бэкапом и авто-откатом).</p>
+        <button class="btn sm ghost wide" data-run="nodes-auto" style="margin-top:4px">Вернуть авто-выбор</button>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer; color:var(--muted); font-size:13px; font-weight:600">Реже нужное: удалить ноду, ротация uuid</summary>
+          <div class="row" style="margin-top:10px">
+            <input type="text" id="nodeDel" placeholder="имя ноды для удаления" style="flex:1">
+            <button class="btn sm ghost" id="btnNodeDel" style="width:auto;padding:0 16px;border-color:#5a3030;color:#f0a0a0">Удалить</button>
+          </div>
+          <button class="btn wide" id="btnRotate" style="margin-top:8px"><span class="ic">🔄</span> Ротация подписки (сменился uuid)</button>
+          <p class="hint">«Ротация» — если после обновления подписки всё отвалилось: gazvpn меняет только uuid, кнопка перепишет его во всех нодах разом.</p>
+        </details>
       </div>
-      <p class="hint">Список (~460 доменов) тянется кроном с itdoginfo/allow-domains и весь идёт через ноду.</p>
     </div>
 
-    <div class="card">
-      <h2>Спец</h2>
-      <div class="grid1">
-        <div class="seg"><span class="lbl">QUIC-блок</span>
-          <button class="btn sm" data-run="quic-on" title="REJECT udp/443: плееры откатываются на пробитый TCP">Вкл</button>
-          <button class="btn sm ghost" data-run="quic-off">Выкл</button></div>
-        <button class="btn sm wide" data-run="watchdog" title="если нода упала — пересобрать пул и вернуть инет">Прогнать сторож нод</button>
+    <div class="panel" data-panel="domains">
+      <div class="card">
+        <h2>Домены через ноду (uci-ipset)</h2>
+        <p class="hint" style="margin-top:-6px">Что именно едет через VPN-ноду, а не напрямую.</p>
+        <button class="btn sm wide" data-run="domains-list">Показать список</button>
+        <div class="row" style="margin-top:9px">
+          <input type="text" id="domAdd" placeholder="figma.com reddit.com">
+          <button class="btn sm" id="btnDomAdd" style="width:auto;padding:0 16px">Добавить</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input type="text" id="domRm" placeholder="netflix.com">
+          <button class="btn sm ghost" id="btnDomRm" style="width:auto;padding:0 16px">Убрать</button>
+        </div>
+        <p class="hint">Добавляет в proxy4/proxy6 + чистый DoH-резолв и перезапускает dnsmasq.</p>
+      </div>
+
+      <div class="card">
+        <h2>geoblock — ушедшие из РФ сервисы</h2>
+        <p class="hint" style="margin-top:-6px">Отдельный авто-список (не твои ручные домены выше) — сервисы, заблокировавшие РФ.</p>
+        <div class="grid2">
+          <button class="btn sm" data-run="geoblock-list">Показать все домены</button>
+          <button class="btn sm" data-run="geoblock-update">Обновить список</button>
+        </div>
+        <p class="hint">Список (~460 доменов) тянется кроном с itdoginfo/allow-domains и весь идёт через ноду.</p>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Инфо и логи</h2>
-      <div class="grid2">
-        <button class="btn primary" data-run="info"><span class="ic">ℹ</span> Инфо о системе</button>
-        <button class="btn ghost" id="btnConn">Подключение…</button>
-        <button class="btn sm" data-log="sing-box">Лог sing-box</button>
-        <button class="btn sm" data-log="zapret">Лог zapret</button>
-        <button class="btn sm" data-log="dns">Лог dnsmasq</button>
+    <div class="panel" data-panel="more">
+      <div class="card">
+        <h2>Сервисы — перезапуск</h2>
+        <p class="hint" style="margin-top:-6px">Если что-то зависло — рестарт конкретной службы без перезагрузки роутера.</p>
+        <div class="grid2">
+          <button class="btn sm" data-run="restart-singbox">sing-box</button>
+          <button class="btn sm" data-run="restart-zapret">zapret</button>
+          <button class="btn sm" data-run="restart-dns">dnsmasq</button>
+          <button class="btn sm" data-run="restart-doh">https-dns-proxy</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Спец</h2>
+        <p class="hint" style="margin-top:-6px">Тонкие настройки — трогай, если знаешь зачем.</p>
+        <div class="grid1">
+          <div class="seg"><span class="lbl">QUIC-блок</span>
+            <button class="btn sm" data-run="quic-on" title="REJECT udp/443: плееры откатываются на пробитый TCP">Вкл</button>
+            <button class="btn sm ghost" data-run="quic-off">Выкл</button></div>
+          <p class="hint" style="margin:0">udp/443 (QUIC) режется, чтобы упрямые плееры откатились на обычный TCP. Может тормозить сервисы, у которых QUIC — основной путь (напр. видео).</p>
+          <button class="btn sm wide" data-run="watchdog" title="если нода упала — пересобрать пул и вернуть инет">Прогнать сторож нод</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Инфо и логи</h2>
+        <p class="hint" style="margin-top:-6px">Модель, прошивка, аптайм роутера + сырые логи служб.</p>
+        <div class="grid2">
+          <button class="btn primary" data-run="info"><span class="ic">ℹ</span> Инфо о системе</button>
+          <button class="btn ghost" id="btnConn">Подключение…</button>
+          <button class="btn sm" data-log="sing-box">Лог sing-box</button>
+          <button class="btn sm" data-log="zapret">Лог zapret</button>
+          <button class="btn sm" data-log="dns">Лог dnsmasq</button>
+        </div>
       </div>
     </div>
   </div>
@@ -259,7 +395,8 @@ const H={"X-Token":TOKEN,"Content-Type":"application/json"};
 const con=$("#con"),conHead=$("#conHead"),conTitle=$("#conTitle"),conRc=$("#conRc");
 let busy=false;
 
-function clearCon(t){con.innerHTML="";conTitle.textContent=t;conRc.className="rc";conRc.textContent="";conHead.classList.add("running")}
+function clearCon(t){con.innerHTML="";conTitle.textContent=t;conRc.className="rc";conRc.textContent="";conHead.classList.add("running");curLines=[]}
+let curLines=[];
 function lineClass(t){
   if(/^\s*(✓|✔)/.test(t))return"l-ok";
   if(/^\s*(✗|✘|ошибк|fail|не ответил|НЕ )/i.test(t))return"l-bad";
@@ -269,28 +406,93 @@ function lineClass(t){
   return"";
 }
 function appendLine(t){const s=document.createElement("span");const c=lineClass(t);if(c)s.className=c;
-  s.textContent=t+"\n";con.appendChild(s);con.scrollTop=con.scrollHeight;scanStatus(t)}
-function finish(rc){conHead.classList.remove("running");conRc.className="rc "+(rc===0?"ok":"bad");
-  conRc.textContent=rc===0?"готово ✓":("код "+rc);$("#hdrDot").className="dot "+(rc===0?"ok":"bad");busy=false}
+  s.textContent=t+"\n";con.appendChild(s);con.scrollTop=con.scrollHeight;curLines.push(t);scanStatus(t)}
+function updateHealth(){const bad=$$(".chip .dot").some(d=>d.classList.contains("bad"));
+  $("#hdrLogo").classList.toggle("health-bad",bad)}
+function finish(rc,onDone){conHead.classList.remove("running");conRc.className="rc "+(rc===0?"ok":"bad");
+  conRc.textContent=rc===0?"готово ✓":("код "+rc);$("#hdrDot").className="dot "+(rc===0?"ok":"bad");busy=false;
+  updateHealth(); if(onDone)onDone(curLines.join("\n"),rc)}
 
-async function runStream(title,{action,args,method="GET"}){
+async function runStream(title,{action,args,method="GET",onDone}){
   if(busy)return; busy=true; clearCon(title);
   let url="/api/run",opt;
   if(method==="GET"){const p=new URLSearchParams({action,t:TOKEN});(args||[]).forEach(a=>p.append("arg",a));
     url+="?"+p; opt={headers:{"X-Token":TOKEN}};}
   else opt={method:"POST",headers:H,body:JSON.stringify({action,args})};
-  let res; try{res=await fetch(url,opt)}catch(e){appendLine("[нет связи с сервером панели: "+e+"]");finish(1);return}
-  if(!res.ok){appendLine("["+res.status+" "+(await res.text())+"]");finish(1);return}
+  let res; try{res=await fetch(url,opt)}catch(e){appendLine("[нет связи с сервером панели: "+e+"]");finish(1,onDone);return}
+  if(!res.ok){appendLine("["+res.status+" "+(await res.text())+"]");finish(1,onDone);return}
   const rd=res.body.getReader(),dec=new TextDecoder();let buf="",rc=0;
   for(;;){const{value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
     while((i=buf.indexOf("\n\n"))>=0){const fr=buf.slice(0,i);buf=buf.slice(i+2);
       let ev="message",d="";fr.split("\n").forEach(l=>{if(l.startsWith("event: "))ev=l.slice(7);else if(l.startsWith("data: "))d=l.slice(6)});
       if(!d)continue;let p;try{p=JSON.parse(d)}catch{p=d}
       if(ev==="line")appendLine(p);else if(ev==="done")rc=p.rc;}}
-  finish(rc);
+  finish(rc,onDone);
 }
 
-$$("[data-run]").forEach(b=>b.addEventListener("click",()=>runStream(b.textContent.trim(),{action:b.dataset.run})));
+// рендер пинга нод барами вместо текстовой портянки (парсит вывод "rctl nodes list")
+function renderNodesViz(text){
+  const box=$("#nodesViz"); if(!box)return;
+  const rows=[];
+  text.split("\n").forEach(line=>{
+    const m=line.trim().match(/^(=>)?\s*([A-Za-z0-9]{1,12})\s+(\d+|-)\s*(?:ms)?\s*(.+)$/);
+    if(!m)return;
+    const [,act,name,ms,q]=m;
+    rows.push({name,ms:ms==="-"?null:+ms,q:q.trim(),active:!!act});
+  });
+  if(!rows.length){box.hidden=true;box.innerHTML="";$("#nodesHint").hidden=true;return}
+  rows.sort((a,b)=>(a.ms??1e9)-(b.ms??1e9));
+  const maxMs=Math.max(800,...rows.map(r=>r.ms||0));
+  box.innerHTML=rows.map(r=>{
+    const tier=r.ms==null?"t-down":r.ms<=250?"t-ok":r.ms<=450?"t-mid":"t-slow";
+    const w=r.ms==null?4:Math.max(6,100-Math.round(r.ms/maxMs*90));
+    return `<div class="node-row${r.active?" is-active":""}" data-name="${r.name}">`+
+      `<span class="nm">${r.name}</span>`+
+      `<span class="node-track"><span class="node-fill ${tier}" style="width:${w}%"></span></span>`+
+      `<span class="ms">${r.ms==null?"—":r.ms+" мс"}</span></div>`;
+  }).join("")+
+    `<div class="nodes-legend"><span><i style="background:var(--ok)"></i>быстро</span>`+
+    `<span><i style="background:var(--warn)"></i>ок</span>`+
+    `<span><i style="background:var(--bad)"></i>медленно</span>`+
+    `<span><i style="background:var(--line)"></i>нет ответа</span></div>`;
+  box.hidden=false; $("#nodesHint").hidden=false;
+}
+
+// тап по ноде в списке = закрепить (как выбор сервера в Happ)
+$("#nodesViz").addEventListener("click",e=>{
+  const row=e.target.closest(".node-row"); if(!row)return;
+  const name=row.dataset.name; if(!name||row.classList.contains("is-active"))return;
+  $$("#nodesViz .node-row").forEach(r=>r.classList.remove("is-active"));
+  row.classList.add("is-active");
+  runStream("Закрепляю ноду "+name,{action:"nodes-use",args:[name],method:"POST"});
+});
+
+$$("[data-run]").forEach(b=>b.addEventListener("click",()=>{
+  if(b.dataset.run!=="nodes"){const v=$("#nodesViz");if(v)v.hidden=true;const h=$("#nodesHint");if(h)h.hidden=true}
+  runStream(b.textContent.trim(),{action:b.dataset.run,onDone:b.dataset.run==="nodes"?renderNodesViz:undefined});
+}));
+
+// тумблеры служб — вкл/выкл (не рестарт), подтверждение при выключении
+const TOGGLE_META={
+  singbox:{name:"sing-box (прокси-туннель)", warnOff:"Внешние/гео-заблокированные сайты через ноду перестанут открываться. РФ-сайты не пострадают."},
+  zapret: {name:"zapret (обход DPI)",        warnOff:"YouTube/голос Discord и т.п. может начать тормозить — вернётся троттлинг провайдера."},
+  doh:    {name:"DoH (шифрованный DNS)",      warnOff:"⚠ Резервного DNS нет — большинство сайтов может перестать открываться, пока не включишь обратно."},
+};
+$$(".switch input[data-toggle]").forEach(inp=>{
+  inp.addEventListener("change",()=>{
+    const key=inp.dataset.toggle, meta=TOGGLE_META[key], turningOff=!inp.checked;
+    if(turningOff&&!confirm(`Выключить ${meta.name}?\n\n${meta.warnOff}`)){inp.checked=true;return}
+    runStream((turningOff?"Выключаю: ":"Включаю: ")+meta.name,{action:`toggle-${key}-${turningOff?"off":"on"}`,method:"POST"});
+  });
+});
+
+// табы
+$$(".tab").forEach(t=>t.addEventListener("click",()=>{
+  $$(".tab").forEach(x=>x.classList.remove("active"));
+  $$(".panel").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");
+  $(`.panel[data-panel="${t.dataset.tab}"]`).classList.add("active");
+}));
 $$("[data-log]").forEach(b=>b.addEventListener("click",()=>runStream("Лог "+b.dataset.log,{action:"logs",args:[b.dataset.log],method:"POST"})));
 $("#btnNodeUse").addEventListener("click",()=>{const v=$("#nodeUse").value.trim();
   if(!/^[A-Za-z0-9._-]+$/.test(v)){$("#nodeUse").focus();return}
@@ -359,9 +561,16 @@ $("#btnSaveCfg").addEventListener("click",async()=>{
     ROUTER_SSH_PORT:$("#cfgPort").value.trim(),DOCTOR_DOMAIN:$("#cfgDom").value.trim()})});
   await loadConfig();close("#mConn")});
 
+const TOGGLE_BY_SVC={proxy:"singbox",zapret:"zapret",dns:"doh"};
 function setChip(svc,ok,val){const d=document.querySelector(`.dot[data-svc="${svc}"]`),v=document.querySelector(`.val[data-val="${svc}"]`);
   if(d&&ok!==null)d.className="dot "+(ok?"ok":"bad");   // null = статус не ясен из строки → не трогаем чип
-  if(v&&val)v.textContent=val}
+  if(v&&val)v.textContent=val;
+  const pn=document.querySelector(`.path .node[data-svc="${svc}"]`);
+  if(pn&&ok!==null)pn.classList.toggle("on",ok);
+  const pv=document.querySelector(`.path .lb[data-val="${svc}"]`);
+  if(pv&&val)pv.textContent=val;
+  const tg=TOGGLE_BY_SVC[svc], inp=tg&&document.querySelector(`.switch input[data-toggle="${tg}"]`);
+  if(inp&&ok!==null&&document.activeElement!==inp)inp.checked=ok}
 function scanStatus(t){
   const up=/(●\s*running|running|active|вкл|включ)/i.test(t), down=/(✗\s*stopped|stopped|выключ|not )/i.test(t);
   const st=up?true:(down?false:null);

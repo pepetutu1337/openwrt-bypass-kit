@@ -33,6 +33,12 @@ STATIC = {
     "restart-zapret":  ["restart", "zapret"],
     "restart-dns":     ["restart", "dnsmasq"],
     "restart-doh":     ["restart", "https-dns-proxy"],
+    "toggle-singbox-on":  ["toggle", "sing-box", "on"],
+    "toggle-singbox-off": ["toggle", "sing-box", "off"],
+    "toggle-zapret-on":   ["toggle", "zapret", "on"],
+    "toggle-zapret-off":  ["toggle", "zapret", "off"],
+    "toggle-doh-on":      ["toggle", "https-dns-proxy", "on"],
+    "toggle-doh-off":     ["toggle", "https-dns-proxy", "off"],
 }
 CONF_KEYS = ["ROUTER_IP", "ROUTER_SSH_USER", "ROUTER_SSH_PORT", "DOCTOR_DOMAIN"]
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -466,16 +472,36 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+def lan_ip():
+    """Локальный IP в LAN (для ссылки с телефона) — без реального сетевого запроса."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--host", default="127.0.0.1",
+                     help="127.0.0.1 (по умолчанию, только этот комп) или 0.0.0.0 (видно всем в твоей Wi-Fi — для входа с телефона)")
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
-    httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    httpd = ThreadingHTTPServer((a.host, a.port), Handler)
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?t={TOKEN}"
     print("Панель живого роутера")
     print(f"  {url}\n  Ctrl-C — стоп")
+    if a.host != "127.0.0.1":
+        ip = lan_ip()
+        print("  ! слушает LAN (--host {}): в твоей сети видно любому устройству, знающему адрес+токен".format(a.host))
+        if ip:
+            print(f"  с телефона (та же Wi-Fi): http://{ip}:{port}/?t={TOKEN}")
     if not a.no_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
