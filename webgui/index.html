@@ -464,7 +464,7 @@ $("#btnInstallGo").addEventListener("click",async()=>{
 function setChip(svc, ok, val){
   const dot = document.querySelector(`.dot[data-svc="${svc}"]`);
   const v = document.querySelector(`.val[data-val="${svc}"]`);
-  if(dot) dot.className = "dot " + (ok===true?"ok":ok===false?"bad":"");
+  if(dot && ok!==null) dot.className = "dot " + (ok?"ok":"bad");  // null = не ясно из строки → не трогаем
   if(v && val) v.textContent = val;
 }
 function scanStatus(t){
