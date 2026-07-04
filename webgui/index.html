@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenWrt Bypass Kit</title>
+<style>
+  :root{
+    --bg:#0d1017; --panel:#141821; --panel2:#1a1f2b; --line:#252b39;
+    --txt:#e6e9ef; --muted:#8b95a7; --accent:#58a6ff; --accent-d:#2b6fd6;
+    --ok:#3fb950; --bad:#f85149; --warn:#d6a339; --con:#0a0c11;
+    --r:14px; --shadow:0 6px 24px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--txt);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+  button{font-family:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2c3444;border-radius:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* header */
+  header{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:12px 18px; background:linear-gradient(180deg,#141a25,#10141c);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex; align-items:center; gap:10px; font-weight:700; font-size:17px}
+  .brand .logo{
+    width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(135deg,#2b6fd6,#58a6ff); font-size:16px;
+  }
+  .router-pill{
+    display:flex; align-items:center; gap:8px; margin-left:auto;
+    background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+    padding:8px 14px; border-radius:999px; cursor:pointer; font-size:14px;
+    min-height:40px;
+  }
+  .router-pill:hover{border-color:var(--accent)}
+  .router-pill .ip{font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%;background:#556; flex:none}
+  .dot.ok{background:var(--ok); box-shadow:0 0 0 4px rgba(63,185,80,.16)}
+  .dot.bad{background:var(--bad); box-shadow:0 0 0 4px rgba(248,81,73,.16)}
+  .dot.wait{background:var(--warn); animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* layout */
+  main{display:grid; grid-template-columns:380px 1fr; gap:16px; padding:16px; max-width:1280px; margin:0 auto}
+  @media(max-width:900px){ main{grid-template-columns:1fr} }
+
+  .col{display:flex; flex-direction:column; gap:14px; min-width:0}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:14px}
+  .card h2{margin:0 0 10px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700}
+
+  /* status chips */
+  .chips{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .chip{display:flex; align-items:center; gap:9px; background:var(--panel2); border:1px solid var(--line);
+        border-radius:10px; padding:9px 11px; font-size:13.5px}
+  .chip .dot{width:9px;height:9px}
+  .chip .lbl{color:var(--muted)}
+  .chip .val{margin-left:auto; font-weight:600}
+
+  /* buttons */
+  .btn{
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    width:100%; min-height:48px; padding:0 14px; border-radius:11px; cursor:pointer;
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+    font-size:15px; font-weight:600; transition:transform .05s, border-color .15s, background .15s;
+  }
+  .btn:hover{border-color:var(--accent)}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+  .btn.primary{background:linear-gradient(135deg,var(--accent-d),var(--accent)); border-color:transparent; color:#04122b}
+  .btn.primary:hover{filter:brightness(1.06)}
+  .btn.ghost{background:transparent}
+  .btn.sm{min-height:40px; font-size:14px; font-weight:600}
+  .btn.wide{grid-column:1/-1}
+  .btn .ic{font-size:17px; line-height:1}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px}
+  .grid1{display:grid; gap:9px}
+  .seg{display:flex; gap:8px}
+  .seg .btn{flex:1}
+
+  .hint{color:var(--muted); font-size:12.5px; margin:2px 0 0}
+  .row{display:flex; gap:8px; align-items:center}
+  input[type=text], textarea{
+    width:100%; background:var(--con); color:var(--txt); border:1px solid var(--line);
+    border-radius:10px; padding:11px 12px; font-size:14px; font-family:inherit;
+  }
+  input:focus, textarea:focus{outline:none; border-color:var(--accent)}
+  textarea{resize:vertical; min-height:120px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px}
+
+  /* console */
+  .console-wrap{position:relative; display:flex; flex-direction:column; height:100%; min-height:420px}
+  .console-head{display:flex; align-items:center; gap:10px; padding:10px 14px;
+    background:var(--panel); border:1px solid var(--line); border-bottom:none;
+    border-radius:var(--r) var(--r) 0 0}
+  .console-head .title{font-weight:600; font-size:14px}
+  .console-head .spin{width:16px;height:16px;border-radius:50%;border:2px solid #33405a;border-top-color:var(--accent);
+    animation:spin .7s linear infinite; display:none}
+  .console-head.running .spin{display:block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .rc{margin-left:auto; font-size:12.5px; font-weight:700; padding:3px 9px; border-radius:999px; display:none}
+  .rc.ok{display:inline;background:rgba(63,185,80,.15); color:var(--ok)}
+  .rc.bad{display:inline;background:rgba(248,81,73,.15); color:var(--bad)}
+  .console{
+    flex:1; overflow:auto; background:var(--con); border:1px solid var(--line); border-top:none;
+    border-radius:0 0 var(--r) var(--r); padding:12px 14px; margin:0;
+    font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    white-space:pre-wrap; word-break:break-word; color:#c9d4e5;
+  }
+  .console .l-ok{color:#7ee787}
+  .console .l-bad{color:#ff9b93}
+  .console .l-warn{color:#e3c26a}
+  .console .l-mut{color:#7d8797}
+  .console .l-hdr{color:#79c0ff; font-weight:600}
+  .console .placeholder{color:var(--muted)}
+
+  /* modal */
+  .backdrop{position:fixed; inset:0; background:rgba(4,7,12,.66); backdrop-filter:blur(3px);
+    display:none; align-items:center; justify-content:center; z-index:40; padding:16px}
+  .backdrop.open{display:flex}
+  .modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow);
+    width:min(560px,100%); max-height:90vh; overflow:auto; padding:20px}
+  .modal h3{margin:0 0 4px; font-size:18px}
+  .modal .sub{color:var(--muted); font-size:13px; margin:0 0 16px}
+  .field{margin-bottom:14px}
+  .field label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600}
+  .checks{display:grid; gap:8px}
+  .check{display:flex; align-items:center; gap:11px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:11px; padding:11px 13px; cursor:pointer; user-select:none}
+  .check input{width:20px;height:20px; accent-color:var(--accent); flex:none}
+  .check .t{font-weight:600; font-size:14px}
+  .check .d{color:var(--muted); font-size:12px}
+  .check .tx{display:flex; flex-direction:column}
+  .modal-actions{display:flex; gap:10px; margin-top:18px}
+  .modal-actions .btn{flex:1}
+  .three{display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">🛡️</span> OpenWrt Bypass Kit</div>
+  <button class="router-pill" id="routerPill" title="Настройки роутера / установка">
+    <span class="dot" id="hdrDot"></span>
+    <span>роутер <span class="ip" id="hdrIp">…</span></span>
+    <span style="color:var(--muted)">⚙</span>
+  </button>
+</header>
+
+<main>
+  <!-- левая колонка: управление -->
+  <div class="col">
+    <div class="card">
+      <h2>Обзор</h2>
+      <div class="chips" id="chips">
+        <div class="chip"><span class="dot" data-svc="proxy"></span><span class="lbl">прокси</span><span class="val" data-val="proxy">—</span></div>
+        <div class="chip"><span class="dot" data-svc="zapret"></span><span class="lbl">zapret</span><span class="val" data-val="zapret">—</span></div>
+        <div class="chip"><span class="dot" data-svc="dns"></span><span class="lbl">DoH</span><span class="val" data-val="dns">—</span></div>
+        <div class="chip"><span class="dot" data-svc="node"></span><span class="lbl">нода</span><span class="val" data-val="node">—</span></div>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <button class="btn primary" data-run="status"><span class="ic">↻</span> Статус</button>
+        <button class="btn" data-run="doctor"><span class="ic">🩺</span> Чекап</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Ноды</h2>
+      <div class="grid2">
+        <button class="btn sm" data-run="nodes-list">Список</button>
+        <button class="btn sm" data-run="nodes-test">Тест живости</button>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="nodeUse" inputmode="numeric" placeholder="№ ноды из списка" style="flex:1">
+        <button class="btn sm" id="btnNodeUse" style="width:auto;padding:0 16px">Закрепить</button>
+      </div>
+      <button class="btn primary wide" id="btnAddNode" style="margin-top:9px"><span class="ic">＋</span> Добавить ноду</button>
+      <p class="hint">Вставь ссылку <code>vless://</code> или JSON-конфиг из Happ — панель сама разберёт формат.</p>
+    </div>
+
+    <div class="card">
+      <h2>Домены через ноду</h2>
+      <button class="btn sm wide" data-run="domains-list">Показать список</button>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="domAdd" placeholder="figma.com reddit.com">
+        <button class="btn sm" id="btnDomAdd" style="width:auto;padding:0 16px">Добавить</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="domRm" placeholder="netflix.com">
+        <button class="btn sm ghost" id="btnDomRm" style="width:auto;padding:0 16px">Убрать</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Компоненты</h2>
+      <div class="grid1">
+        <div class="seg"><span class="lbl" style="align-self:center;color:var(--muted);width:80px">Прокси</span>
+          <button class="btn sm" data-run="proxy-on">Вкл</button>
+          <button class="btn sm ghost" data-run="proxy-off">Выкл</button></div>
+        <div class="seg"><span class="lbl" style="align-self:center;color:var(--muted);width:80px">zapret</span>
+          <button class="btn sm" data-run="zapret-on">Вкл</button>
+          <button class="btn sm ghost" data-run="zapret-off">Выкл</button>
+          <button class="btn sm ghost" data-run="zapret-check" title="blockcheck — подбор стратегии">Подбор</button></div>
+        <div class="seg"><span class="lbl" style="align-self:center;color:var(--muted);width:80px">geoblock</span>
+          <button class="btn sm" data-run="geoblock-update">Обновить</button>
+          <button class="btn sm ghost" data-run="geoblock-count">Счёт</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Обслуживание</h2>
+      <div class="grid2">
+        <button class="btn primary" data-run="apply"><span class="ic">⬆</span> Применить</button>
+        <button class="btn" data-run="pull">Забрать конфиг</button>
+        <button class="btn sm" data-log="sing-box">Лог sing-box</button>
+        <button class="btn sm" data-log="zapret">Лог zapret</button>
+      </div>
+      <button class="btn ghost wide" id="btnInstall" style="margin-top:9px">Мастер установки…</button>
+    </div>
+  </div>
+
+  <!-- правая колонка: консоль / вставка нод -->
+  <div class="col">
+    <div class="console-wrap">
+      <div class="console-head" id="conHead">
+        <div class="spin"></div>
+        <span class="title" id="conTitle">Готово к работе</span>
+        <span class="rc" id="conRc"></span>
+      </div>
+      <pre class="console" id="con"><span class="placeholder">Нажми «Статус», чтобы проверить роутер. Вывод команд появится здесь.</span></pre>
+    </div>
+  </div>
+</main>
+
+<!-- модалка: добавить ноду -->
+<div class="backdrop" id="mNode">
+  <div class="modal">
+    <h3>Добавить ноду</h3>
+    <p class="sub">Вставь ссылку <code>vless://…</code> или весь JSON-конфиг из Happ (кнопка «Поделиться» / экспорт). Можно несколько.</p>
+    <div class="field">
+      <textarea id="nodeText" placeholder="vless://…&#10;— или —&#10;{ &quot;outbounds&quot;: [ … ] }"></textarea>
+    </div>
+    <div class="row"><button class="btn sm ghost" id="btnPaste" style="width:auto;padding:0 16px">📋 Вставить из буфера</button></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Отмена</button>
+      <button class="btn primary" id="btnNodeGo">Добавить и применить</button>
+    </div>
+  </div>
+</div>
+
+<!-- модалка: мастер установки -->
+<div class="backdrop" id="mInstall">
+  <div class="modal">
+    <h3>Мастер установки</h3>
+    <p class="sub">Данные роутера и что включить. Ставится поверх чистого OpenWrt — займёт пару минут (качаются пакеты).</p>
+    <div class="three">
+      <div class="field"><label>IP роутера</label><input type="text" id="cfgIp" placeholder="192.168.1.1"></div>
+      <div class="field"><label>SSH-юзер</label><input type="text" id="cfgUser" placeholder="root"></div>
+      <div class="field"><label>Порт</label><input type="text" id="cfgPort" placeholder="22"></div>
+    </div>
+    <div class="checks" id="feat">
+      <label class="check"><input type="checkbox" id="fProxy"><span class="tx"><span class="t">Прокси (sing-box)</span><span class="d">точечный сплит только для нужных доменов</span></span></label>
+      <label class="check"><input type="checkbox" id="fZapret"><span class="tx"><span class="t">zapret — обход DPI</span><span class="d">YouTube, голос Discord и т.п.</span></span></label>
+      <label class="check"><input type="checkbox" id="fGeo"><span class="tx"><span class="t">geoblock-автосписок</span><span class="d">ушедшие из РФ сервисы через ноду</span></span></label>
+      <label class="check"><input type="checkbox" id="fSplit"><span class="tx"><span class="t">split-DNS для РФ</span><span class="d">чинит банки (VTB и пр.)</span></span></label>
+      <label class="check"><input type="checkbox" id="fQuic"><span class="tx"><span class="t">Блок QUIC</span><span class="d">откат плееров на пробитый TCP</span></span></label>
+      <label class="check"><input type="checkbox" id="fV6"><span class="tx"><span class="t">Погасить IPv6 на LAN</span><span class="d">чтобы блок-сайты не утекали мимо ноды</span></span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Отмена</button>
+      <button class="btn sm" id="btnSaveCfg" style="flex:.7">Только сохранить</button>
+      <button class="btn primary" id="btnInstallGo">Сохранить и установить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const H = {"X-Token":TOKEN, "Content-Type":"application/json"};
+
+const con = $("#con"), conHead = $("#conHead"), conTitle = $("#conTitle"), conRc = $("#conRc");
+let busy = false;
+
+function clearCon(title){
+  con.innerHTML = "";
+  conTitle.textContent = title;
+  conRc.className = "rc"; conRc.textContent = "";
+  conHead.classList.add("running");
+}
+function lineClass(t){
+  if(/^\s*(✓|✔|OK\b)/.test(t)) return "l-ok";
+  if(/^\s*(✗|✘|ERR|ошибк|fail)/i.test(t)) return "l-bad";
+  if(/^\s*(!|⚠|warn)/i.test(t)) return "l-warn";
+  if(/^\s*::/.test(t)) return "l-mut";
+  if(/^===|^---|^\s*#/.test(t)) return "l-hdr";
+  return "";
+}
+function appendLine(t){
+  const span = document.createElement("span");
+  const c = lineClass(t);
+  if(c) span.className = c;
+  span.textContent = t + "\n";
+  con.appendChild(span);
+  con.scrollTop = con.scrollHeight;
+  scanStatus(t);
+}
+function finish(rc){
+  conHead.classList.remove("running");
+  conRc.className = "rc " + (rc===0 ? "ok":"bad");
+  conRc.textContent = rc===0 ? "готово ✓" : ("код " + rc);
+  setHdr(rc===0 ? "ok" : "bad");
+  busy = false;
+}
+
+// потоковое чтение SSE через fetch
+async function runStream(title, {action, args, method="GET", body=null}){
+  if(busy) return;
+  busy = true; clearCon(title);
+  let url = "/api/run", opt;
+  if(method==="GET"){
+    const p = new URLSearchParams({action, t:TOKEN});
+    (args||[]).forEach(a=>p.append("arg", a));
+    url += "?"+p.toString();
+    opt = {headers:{"X-Token":TOKEN}};
+  } else {
+    opt = {method:"POST", headers:H, body:JSON.stringify(body||{action, args})};
+  }
+  let res;
+  try{ res = await fetch(url, opt); }
+  catch(e){ appendLine("[нет связи с сервером панели: "+e+"]"); finish(1); return; }
+  if(!res.ok){ appendLine("["+res.status+" "+(await res.text())+"]"); finish(1); return; }
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = "", rc = 0;
+  for(;;){
+    const {value, done} = await reader.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let idx;
+    while((idx = buf.indexOf("\n\n")) >= 0){
+      const frame = buf.slice(0, idx); buf = buf.slice(idx+2);
+      let ev="message", data="";
+      frame.split("\n").forEach(l=>{
+        if(l.startsWith("event: ")) ev = l.slice(7);
+        else if(l.startsWith("data: ")) data = l.slice(6);
+      });
+      if(!data) continue;
+      let payload; try{ payload = JSON.parse(data); }catch{ payload = data; }
+      if(ev==="line") appendLine(payload);
+      else if(ev==="done") rc = payload.rc;
+    }
+  }
+  finish(rc);
+}
+
+// быстрые действия по data-run (GET, статические)
+$$("[data-run]").forEach(b=>b.addEventListener("click",()=>{
+  const a = b.dataset.run;
+  runStream(b.textContent.trim(), {action:a});
+}));
+$$("[data-log]").forEach(b=>b.addEventListener("click",()=>{
+  runStream("Лог "+b.dataset.log, {action:"logs", args:[b.dataset.log], method:"POST",
+    body:{action:"logs", args:[b.dataset.log]}});
+}));
+
+// домены
+$("#btnDomAdd").addEventListener("click",()=>{
+  const v = $("#domAdd").value.trim(); if(!v) return;
+  runStream("Добавляю домены", {action:"domains-add", args:v.split(/\s+/), method:"POST",
+    body:{action:"domains-add", args:v.split(/\s+/)}});
+  $("#domAdd").value="";
+});
+$("#btnDomRm").addEventListener("click",()=>{
+  const v = $("#domRm").value.trim(); if(!v) return;
+  runStream("Убираю домен", {action:"domains-rm", args:[v], method:"POST",
+    body:{action:"domains-rm", args:[v]}});
+  $("#domRm").value="";
+});
+$("#btnNodeUse").addEventListener("click",()=>{
+  const v = $("#nodeUse").value.trim(); if(!/^\d+$/.test(v)) { $("#nodeUse").focus(); return; }
+  runStream("Закрепляю ноду №"+v, {action:"nodes-use", args:[v], method:"POST",
+    body:{action:"nodes-use", args:[v]}});
+  $("#nodeUse").value="";
+});
+
+// модалки
+const open = id => $(id).classList.add("open");
+const close = id => $(id).classList.remove("open");
+$$("[data-close]").forEach(b=>b.addEventListener("click",e=>e.target.closest(".backdrop").classList.remove("open")));
+$$(".backdrop").forEach(bd=>bd.addEventListener("click",e=>{ if(e.target===bd) bd.classList.remove("open"); }));
+
+$("#btnAddNode").addEventListener("click",()=>{ $("#nodeText").value=""; open("#mNode"); });
+$("#btnPaste").addEventListener("click",async()=>{
+  try{ $("#nodeText").value = await navigator.clipboard.readText(); }
+  catch{ $("#nodeText").focus(); }
+});
+$("#btnNodeGo").addEventListener("click",async()=>{
+  const text = $("#nodeText").value.trim();
+  if(!text){ $("#nodeText").focus(); return; }
+  close("#mNode");
+  if(busy) return; busy=true; clearCon("Добавляю ноду");
+  let res;
+  try{ res = await fetch("/api/addnode",{method:"POST",headers:H,body:JSON.stringify({text})}); }
+  catch(e){ appendLine("[нет связи: "+e+"]"); finish(1); return; }
+  if(!res.ok){ appendLine("["+res.status+" "+(await res.text())+"]"); finish(1); return; }
+  const reader=res.body.getReader(), dec=new TextDecoder(); let buf="",rc=0;
+  for(;;){ const {value,done}=await reader.read(); if(done)break;
+    buf+=dec.decode(value,{stream:true}); let i;
+    while((i=buf.indexOf("\n\n"))>=0){ const fr=buf.slice(0,i); buf=buf.slice(i+2);
+      let ev="message",d=""; fr.split("\n").forEach(l=>{ if(l.startsWith("event: "))ev=l.slice(7); else if(l.startsWith("data: "))d=l.slice(6);});
+      if(!d)continue; let p; try{p=JSON.parse(d)}catch{p=d}
+      if(ev==="line")appendLine(p); else if(ev==="done")rc=p.rc; } }
+  finish(rc);
+});
+
+// мастер установки
+async function loadConfig(){
+  try{
+    const c = await (await fetch("/api/config",{headers:{"X-Token":TOKEN}})).json();
+    $("#hdrIp").textContent = c.ROUTER_IP || "—";
+    $("#cfgIp").value = c.ROUTER_IP||""; $("#cfgUser").value = c.ROUTER_SSH_USER||"";
+    $("#cfgPort").value = c.ROUTER_SSH_PORT||"";
+    $("#fProxy").checked = c.PROXY_ENABLE==="1";
+    $("#fZapret").checked = c.ZAPRET_ENABLE==="1";
+    $("#fGeo").checked = c.GEOBLOCK_ENABLE==="1";
+    $("#fSplit").checked = c.SPLIT_RU_ENABLE==="1";
+    $("#fQuic").checked = c.BLOCK_QUIC==="1";
+    $("#fV6").checked = (c.LAN_IPV6||"")==="disabled";
+    return c;
+  }catch{ return {}; }
+}
+function cfgFromForm(){
+  return {
+    ROUTER_IP:$("#cfgIp").value.trim(), ROUTER_SSH_USER:$("#cfgUser").value.trim(),
+    ROUTER_SSH_PORT:$("#cfgPort").value.trim(),
+    PROXY_ENABLE:$("#fProxy").checked?"1":"0", ZAPRET_ENABLE:$("#fZapret").checked?"1":"0",
+    GEOBLOCK_ENABLE:$("#fGeo").checked?"1":"0", SPLIT_RU_ENABLE:$("#fSplit").checked?"1":"0",
+    BLOCK_QUIC:$("#fQuic").checked?"1":"0", LAN_IPV6:$("#fV6").checked?"disabled":"keep",
+  };
+}
+async function saveCfg(){
+  await fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify(cfgFromForm())});
+  await loadConfig();
+}
+$("#routerPill").addEventListener("click",()=>{ loadConfig().then(()=>open("#mInstall")); });
+$("#btnInstall").addEventListener("click",()=>{ loadConfig().then(()=>open("#mInstall")); });
+$("#btnSaveCfg").addEventListener("click",async()=>{ await saveCfg(); close("#mInstall"); });
+$("#btnInstallGo").addEventListener("click",async()=>{
+  await saveCfg(); close("#mInstall");
+  runStream("Установка на роутер", {action:"install", method:"POST", body:{action:"install"}});
+});
+
+// приблизительная подсветка чипов по выводу status
+function setChip(svc, ok, val){
+  const dot = document.querySelector(`.dot[data-svc="${svc}"]`);
+  const v = document.querySelector(`.val[data-val="${svc}"]`);
+  if(dot) dot.className = "dot " + (ok===true?"ok":ok===false?"bad":"");
+  if(v && val) v.textContent = val;
+}
+function scanStatus(t){
+  const up = /(up|running|active|✓|●|работает|enabled|вкл)/i.test(t);
+  const down = /(down|stopped|✗|not running|inactive|выкл|остановл)/i.test(t);
+  const st = up?true:(down?false:null);
+  if(/sing-?box|прокси|proxy/i.test(t)) setChip("proxy", st, up?"вкл":down?"выкл":null);
+  if(/zapret/i.test(t)) setChip("zapret", st, up?"вкл":down?"выкл":null);
+  if(/doh|dns|https-dns/i.test(t)) setChip("dns", st, up?"ок":down?"нет":null);
+  const ip = t.match(/\b(\d{1,3}\.){3}\d{1,3}\b/);
+  if(/(нода|node|выход|exit|selector|active).*\d+\.\d+/i.test(t) && ip) setChip("node", true, ip[0]);
+}
+function setHdr(state){ $("#hdrDot").className = "dot " + (state||""); }
+
+// первичная загрузка
+loadConfig();
+$("#hdrDot").className = "dot";
+// deep-link: #install / #node открывают нужную модалку
+if(location.hash==="#install") loadConfig().then(()=>open("#mInstall"));
+else if(location.hash==="#node") open("#mNode");
+// авто-статус при открытии (кроме случая, когда сразу открыта модалка)
+window.addEventListener("load",()=>{ if(!location.hash) setTimeout(()=>{ $('[data-run="status"]').click(); }, 250); });
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+#!/bin/sh
+# ============================================================
+#  netgui-web — запуск локальной веб-панели кита (Linux / macOS).
+#  Поднимает крошечный Python-сервер (только stdlib) и открывает браузер.
+#  Кроссплатформенно: нужен только python3 (на SteamOS/macOS есть) и ssh.
+#  При первом запуске создаёт ярлык в меню приложений.
+# ============================================================
+KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SERVER="$KIT_DIR/webgui/server.py"
+
+# найти python3
+PY=""
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1; then
+    "$c" -c 'import sys; sys.exit(0 if sys.version_info[0]>=3 else 1)' 2>/dev/null && { PY="$c"; break; }
+  fi
+done
+[ -n "$PY" ] || {
+  echo "Нужен Python 3. Установи:"
+  echo "  SteamOS/Arch: python уже есть; Debian/Ubuntu: sudo apt install python3"
+  echo "  macOS: brew install python3"
+  exit 1
+}
+
+# ярлык в меню приложений (Linux, создаётся один раз)
+if [ "$(uname)" = "Linux" ] && [ -n "${HOME:-}" ]; then
+  d="$HOME/.local/share/applications/openwrt-bypass-kit-web.desktop"
+  if [ ! -f "$d" ]; then
+    mkdir -p "$HOME/.local/share/applications"
+    cat > "$d" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OpenWrt Bypass Kit (панель)
+Comment=Веб-панель управления обходом блокировок
+Exec=$KIT_DIR/bin/netgui-web
+Icon=network-vpn
+Terminal=false
+Categories=Network;System;
+EOF
+    chmod +x "$d" 2>/dev/null || true
+  fi
+fi
+
+exec "$PY" "$SERVER" "$@"
