@@ -46,6 +46,7 @@ TOKEN = secrets.token_urlsafe(16)
 STATIC_ACTIONS = {
     "status":         ["status"],
     "doctor":         ["doctor"],
+    "info":           ["info"],
     "nodes-list":     ["nodes", "list"],
     "nodes-test":     ["nodes", "test"],
     "domains-list":   ["domains", "list"],
@@ -54,6 +55,7 @@ STATIC_ACTIONS = {
     "pull":           ["pull"],
     "geoblock-update":["geoblock", "update"],
     "geoblock-count": ["geoblock", "count"],
+    "geoblock-list":  ["geoblock", "list"],
     "geoblock-on":    ["geoblock", "on"],
     "geoblock-off":   ["geoblock", "off"],
     "zapret-on":      ["zapret", "on"],
@@ -162,6 +164,30 @@ def add_nodes_argv(text):
 
 
 # ------------------------------------------------------------------- runner ----
+def capture(argv, timeout=15):
+    """Синхронно выполнить netctl argv, вернуть (rc, текст)."""
+    try:
+        p = subprocess.run(NETCTL + argv, cwd=KIT_DIR, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return 1, str(e)
+
+
+def read_meta():
+    """netctl meta -> {model, host, lan}. Подставляет модель+подсеть подключённого роутера."""
+    rc, out = capture(["meta"], timeout=12)
+    meta = {"model": "", "host": "", "lan": ""}
+    if rc == 0:
+        for line in out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() in meta:
+                    meta[k.strip()] = v.strip()
+    return meta
+
+
 def stream_command(argv, on_line):
     """Запускает netctl argv, построчно отдаёт вывод в on_line, возвращает код."""
     env = dict(os.environ)
@@ -249,6 +275,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._check_token(qs):
                 return self._json(403, {"error": "bad token"})
             return self._json(200, read_conf())
+        if u.path == "/api/meta":
+            if not self._check_token(qs):
+                return self._json(403, {"error": "bad token"})
+            return self._json(200, read_meta())
         if u.path == "/api/run":
             if not self._check_token(qs):
                 return self._send(403, "bad token")

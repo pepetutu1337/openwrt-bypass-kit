@@ -70,6 +70,8 @@ case "$cmd" in
   pull)     pull_config ;;
   status)   $SSH "netkit status" ;;
   doctor)   $SSH "netkit doctor ${*:-}" ;;
+  info)     $SSH "netkit info" ;;
+  meta)     $SSH "netkit meta" ;;
   logs)     $SSH "netkit logs ${*:-}" ;;
   domains)  $SSH "netkit domains $*" ;;
   nodes)

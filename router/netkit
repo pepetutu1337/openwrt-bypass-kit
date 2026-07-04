@@ -489,8 +489,55 @@ cmd_geoblock() {
     on)  GEOBLOCK_ENABLE=1; deploy_geoblock; /usr/sbin/geoblock-update;;
     off) cron_line "/usr/sbin/geoblock-update" "$GEOBLOCK_CRON" 0; rm -f "$GEOBLOCKD"; /etc/init.d/dnsmasq restart 2>/dev/null; ok "geoblock выключен";;
     count) echo "  доменов в geoblock: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0)";;
-    *) err "geoblock: update | on | off | count";;
+    list)
+      [ -f "$GEOBLOCKD" ] || { warn "список geoblock ещё не создан (netkit geoblock update)"; return 0; }
+      d=$(sed -n 's|^nftset=/\([^/]*\)/.*|\1|p' "$GEOBLOCKD" | sort -u | grep .)
+      say "geoblock: $(printf '%s\n' "$d" | grep -c .) доменов (авто-список ушедших из РФ)"
+      printf '%s\n' "$d" | awk '{printf "%4d  %s\n", NR, $0}'
+      ;;
+    *) err "geoblock: update | on | off | count | list";;
   esac
+}
+
+# модель/хост/подсеть подключённого роутера — для автозаголовка панели
+cmd_meta() {
+  m=$(cat /tmp/sysinfo/model 2>/dev/null || echo OpenWrt)
+  h=$(uci -q get system.@system[0].hostname 2>/dev/null)
+  ip=$(uci -q get network.lan.ipaddr 2>/dev/null)
+  case "$ip" in
+    */*|"") lan="$ip";;
+    *) nm=$(uci -q get network.lan.netmask 2>/dev/null); c=0
+       for o in $(echo "${nm:-255.255.255.0}" | tr '.' ' '); do case $o in 255)c=$((c+8));;254)c=$((c+7));;252)c=$((c+6));;248)c=$((c+5));;240)c=$((c+4));;224)c=$((c+3));;192)c=$((c+2));;128)c=$((c+1));;esac; done
+       lan="$ip/$c";;
+  esac
+  echo "model=$m"; echo "host=$h"; echo "lan=$lan"
+}
+
+cmd_info() {
+  echo "=== роутер ==="
+  echo "модель:   $(cat /tmp/sysinfo/model 2>/dev/null || echo ?)"
+  echo "хост:     $(uci -q get system.@system[0].hostname 2>/dev/null)"
+  d=$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_DESCRIPTION"); echo "прошивка: ${d:-?}"
+  echo "ядро:     $(uname -r)"
+  up=$(cut -d. -f1 /proc/uptime 2>/dev/null); [ -n "$up" ] && echo "аптайм:   $((up/86400))д $((up%86400/3600))ч $((up%3600/60))м"
+  echo "нагрузка: $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
+  echo "память:   $(free 2>/dev/null | awk '/^Mem/{printf "%d/%d МБ занято", $3/1024, $2/1024}')"
+  echo
+  echo "=== сеть ==="
+  lip=$(uci -q get network.lan.ipaddr); lnm=$(uci -q get network.lan.netmask)
+  case "$lip" in */*) echo "LAN:      $lip";; *) echo "LAN:      $lip${lnm:+ / $lnm}";; esac
+  w=$(ubus call network.interface.wan status 2>/dev/null | jq -r '.["ipv4-address"][0].address // empty' 2>/dev/null)
+  echo "WAN IP:   ${w:-?}"
+  echo
+  echo "=== обход ==="
+  echo "sing-box: $(sing-box version 2>/dev/null | head -1)"
+  if [ "$PROXY_ENABLE" = 1 ]; then
+    node=$(curl -s -m 4 "http://$CLASH/proxies/proxy" 2>/dev/null | jq -r '.now // empty' 2>/dev/null)
+    [ "$node" = auto ] && node=$(curl -s -m 4 "http://$CLASH/proxies/auto" 2>/dev/null | jq -r '.now // empty' 2>/dev/null)
+    echo "нода:     ${node:-?}"
+  fi
+  echo "домены:   прокси $(lines "$CFG/domains.list" | wc -l) + geoblock $(grep -c proxy4 "$GEOBLOCKD" 2>/dev/null || echo 0)"
+  echo "zapret:   $(pidof nfqws 2>/dev/null | wc -w) nfqws-процессов"
 }
 
 cmd_proxy() {
@@ -578,6 +625,8 @@ case "${1:-}" in
   geoblock) shift; cmd_geoblock "$@";;
   status)  cmd_status;;
   doctor)  shift; cmd_doctor "$@";;
+  info)    cmd_info;;
+  meta)    cmd_meta;;
   logs)    shift; cmd_logs "$@";;
-  *) echo "netkit: install|apply|status|doctor|domains|nodes|zapret|proxy|geoblock|logs"; exit 1;;
+  *) echo "netkit: install|apply|status|doctor|info|meta|domains|nodes|zapret|proxy|geoblock|logs"; exit 1;;
 esac

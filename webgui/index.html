@@ -35,6 +35,7 @@
     width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
     background:linear-gradient(135deg,#2b6fd6,#58a6ff); font-size:16px;
   }
+  .brand .sub{font-weight:500; font-size:12px; color:var(--muted)}
   .router-pill{
     display:flex; align-items:center; gap:8px; margin-left:auto;
     background:var(--panel2); border:1px solid var(--line); color:var(--txt);
@@ -145,10 +146,10 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo">🛡️</span> OpenWrt Bypass Kit</div>
+  <div class="brand"><span class="logo">🛡️</span><div>OpenWrt Bypass Kit<div class="sub" id="hdrModel"></div></div></div>
   <button class="router-pill" id="routerPill" title="Настройки роутера / установка">
     <span class="dot" id="hdrDot"></span>
-    <span>роутер <span class="ip" id="hdrIp">…</span></span>
+    <span class="ip" id="hdrIp">…</span>
     <span style="color:var(--muted)">⚙</span>
   </button>
 </header>
@@ -209,7 +210,8 @@
           <button class="btn sm ghost" data-run="zapret-check" title="blockcheck — подбор стратегии">Подбор</button></div>
         <div class="seg"><span class="lbl" style="align-self:center;color:var(--muted);width:80px">geoblock</span>
           <button class="btn sm" data-run="geoblock-update">Обновить</button>
-          <button class="btn sm ghost" data-run="geoblock-count">Счёт</button></div>
+          <button class="btn sm ghost" data-run="geoblock-count">Счёт</button>
+          <button class="btn sm ghost" data-run="geoblock-list" title="показать все домены geoblock">Домены</button></div>
       </div>
     </div>
 
@@ -217,7 +219,8 @@
       <h2>Обслуживание</h2>
       <div class="grid2">
         <button class="btn primary" data-run="apply"><span class="ic">⬆</span> Применить</button>
-        <button class="btn" data-run="pull">Забрать конфиг</button>
+        <button class="btn" data-run="info"><span class="ic">ℹ</span> Инфо о системе</button>
+        <button class="btn sm" data-run="pull">Забрать конфиг</button>
         <button class="btn sm" data-log="sing-box">Лог sing-box</button>
         <button class="btn sm" data-log="zapret">Лог zapret</button>
       </div>
@@ -476,8 +479,17 @@ function scanStatus(t){
 }
 function setHdr(state){ $("#hdrDot").className = "dot " + (state||""); }
 
+// автозаголовок: модель + подсеть ПОДКЛЮЧЁННОГО роутера (netctl meta)
+async function loadMeta(){
+  try{
+    const m = await (await fetch("/api/meta",{headers:{"X-Token":TOKEN}})).json();
+    if(m.model) $("#hdrModel").textContent = m.model;
+    if(m.lan)   $("#hdrIp").textContent = m.lan;
+  }catch{}
+}
+
 // первичная загрузка
-loadConfig();
+loadConfig(); loadMeta();
 $("#hdrDot").className = "dot";
 // deep-link: #install / #node открывают нужную модалку
 if(location.hash==="#install") loadConfig().then(()=>open("#mInstall"));
