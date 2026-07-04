@@ -15,27 +15,26 @@ CONF="$KIT_DIR/config/kit.conf"
 SSH_KEY_OPT=""
 [ -n "${ROUTER_SSH_KEY:-}" ] && SSH_KEY_OPT="-i $ROUTER_SSH_KEY"
 SSH="ssh $SSH_KEY_OPT -p ${ROUTER_SSH_PORT:-22} -o ConnectTimeout=8 ${ROUTER_SSH_USER}@${ROUTER_IP}"
-SCP="scp $SSH_KEY_OPT -P ${ROUTER_SSH_PORT:-22} -q"
 DEST="${ROUTER_SSH_USER}@${ROUTER_IP}"
+
+# передача файлов через ssh 'cat' (НЕ scp: на OpenWrt/dropbear нет sftp-server)
+put_file() { $SSH "cat > $2" < "$1"; }              # $1=локальный  $2=путь на роутере
+get_file() { $SSH "cat $2" > "$1"; }                # $1=локальный  $2=путь на роутере
 
 push_config() {
   echo ":: заливаю конфиг на роутер ($ROUTER_IP)…"
   $SSH 'mkdir -p /etc/netkit'
-  $SCP "$KIT_DIR"/config/kit.conf \
-       "$KIT_DIR"/config/nodes.list \
-       "$KIT_DIR"/config/domains.list \
-       "$KIT_DIR"/config/ru-split.list \
-       "$KIT_DIR"/config/telegram-cidr.list \
-       "$KIT_DIR"/config/zapret.conf \
-       "$DEST":/etc/netkit/
-  $SCP "$KIT_DIR"/router/netkit "$DEST":/usr/sbin/netkit
+  for f in kit.conf nodes.list domains.list ru-split.list telegram-cidr.list zapret.conf; do
+    put_file "$KIT_DIR/config/$f" "/etc/netkit/$f" || { echo "  ✗ не залился $f"; exit 1; }
+  done
+  put_file "$KIT_DIR/router/netkit" "/usr/sbin/netkit" || { echo "  ✗ не залился netkit"; exit 1; }
   $SSH 'chmod +x /usr/sbin/netkit'
 }
 
 pull_config() {
   echo ":: тяну текущий конфиг с роутера в локальные файлы…"
   for f in nodes.list domains.list ru-split.list telegram-cidr.list zapret.conf; do
-    $SCP "$DEST":/etc/netkit/"$f" "$KIT_DIR"/config/"$f" && echo "  <- $f"
+    get_file "$KIT_DIR/config/$f" "/etc/netkit/$f" && echo "  <- $f"
   done
 }
 

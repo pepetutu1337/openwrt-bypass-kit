@@ -22,7 +22,6 @@ if "%SSH_PORT%"=="" set "SSH_PORT=22"
 set "KEYOPT="
 if not "%SSH_KEY%"=="" set "KEYOPT=-i %SSH_KEY%"
 set "SSH=ssh %KEYOPT% -p %SSH_PORT% -o ConnectTimeout=8 %SSH_USER%@%ROUTER_IP%"
-set "SCP=scp %KEYOPT% -P %SSH_PORT% -q"
 set "DEST=%SSH_USER%@%ROUTER_IP%"
 
 set "CMD=%1"
@@ -65,14 +64,17 @@ goto :eof
 
 :push
 echo :: заливаю конфиг на роутер (%ROUTER_IP%)...
+REM через ssh 'cat' (НЕ scp: на OpenWrt/dropbear нет sftp-server)
 %SSH% "mkdir -p /etc/netkit"
-%SCP% "%KIT_DIR%\config\kit.conf" "%KIT_DIR%\config\nodes.list" "%KIT_DIR%\config\domains.list" "%KIT_DIR%\config\ru-split.list" "%KIT_DIR%\config\telegram-cidr.list" "%KIT_DIR%\config\zapret.conf" %DEST%:/etc/netkit/
-%SCP% "%KIT_DIR%\router\netkit" %DEST%:/usr/sbin/netkit
+for %%f in (kit.conf nodes.list domains.list ru-split.list telegram-cidr.list zapret.conf) do (
+  %SSH% "cat > /etc/netkit/%%f" < "%KIT_DIR%\config\%%f"
+)
+%SSH% "cat > /usr/sbin/netkit" < "%KIT_DIR%\router\netkit"
 %SSH% "chmod +x /usr/sbin/netkit"
 goto :eof
 
 :pull
 for %%f in (nodes.list domains.list ru-split.list telegram-cidr.list zapret.conf) do (
-  %SCP% %DEST%:/etc/netkit/%%f "%KIT_DIR%\config\%%f" && echo   ^<- %%f
+  %SSH% "cat /etc/netkit/%%f" > "%KIT_DIR%\config\%%f" && echo   ^<- %%f
 )
 goto :eof
