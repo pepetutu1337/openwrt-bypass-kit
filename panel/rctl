@@ -1,0 +1,319 @@
+#!/bin/sh
+# ============================================================
+#  rctl — пульт к ТВОЕМУ живому роутеру (AX3000T / OpenWrt 25.12.5).
+#  Не кит: роутер настроен руками (sing-box redirect :1100, uci-ipset
+#  proxy4/6, https-dns-proxy :5053/:5054, zapret в /opt/zapret,
+#  geoblock-update + proxy-watchdog, split-ru, clash API :9090).
+#  rctl просто ходит по SSH и дёргает эти реальные команды/пути.
+#  Отдельно от репозитория (kit) — тут команды под конкретно этот роутер.
+# ============================================================
+set -eu
+DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF="$DIR/panel.conf"
+[ -f "$CONF" ] || { echo "нет $CONF"; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+KEY_OPT=""; [ -n "${ROUTER_SSH_KEY:-}" ] && KEY_OPT="-i $ROUTER_SSH_KEY"
+SSH="ssh $KEY_OPT -p ${ROUTER_SSH_PORT:-22} -o ConnectTimeout=8 -o BatchMode=yes ${ROUTER_SSH_USER}@${ROUTER_IP}"
+SCP="scp $KEY_OPT -P ${ROUTER_SSH_PORT:-22} -q -o ConnectTimeout=8 -o BatchMode=yes"
+DEST="${ROUTER_SSH_USER}@${ROUTER_IP}"
+SBOX=/etc/sing-box/config.json
+API="${CLASH_API:-127.0.0.1:9090}"
+
+# выполнить удалённый sh-скрипт (из stdin), позиционные args после --
+remote() { script="$1"; shift; printf '%s' "$script" | $SSH "sh -s -- $*"; }
+
+# ---- удалённые скрипты (busybox sh, БЕЗ jq — парсим grep/sed) ----------------
+
+R_STATUS='
+echo ":: роутер $(uci -q get network.lan.ipaddr 2>/dev/null || echo ?)"
+echo "=== сервисы ==="
+for p in "sing-box:sing-box" "zapret:nfqws" "DoH:https-dns-proxy" "dnsmasq:dnsmasq"; do
+  n=${p%%:*}; b=${p##*:}
+  if pidof "$b" >/dev/null 2>&1; then echo "$n ● running"; else echo "$n ✗ stopped"; fi
+done
+echo "=== прокси ==="
+API="'"$API"'"
+sel=$(curl -s --max-time 4 "http://$API/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+node=$sel
+[ "$sel" = "auto" ] && node=$(curl -s --max-time 4 "http://$API/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+[ -n "$node" ] && echo "активная нода: $node" || echo "! clash API $API не ответил (sing-box запущен?)"
+dc=$(uci -q get dhcp.@ipset[0].domain 2>/dev/null | wc -w)
+echo "проксируемых доменов (uci): ${dc:-0}"
+[ -f /etc/dnsmasq.d/geoblock.conf ] && echo "geoblock: $(grep -c proxy4 /etc/dnsmasq.d/geoblock.conf) доменов" || echo "geoblock: файла нет"
+if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "QUIC-блок: включён (REJECT udp/443 lan->wan)"; else echo "QUIC-блок: выключен"; fi
+'
+
+R_DOCTOR='
+D=${1:-claude.ai}
+API="'"$API"'"
+echo ":: чекап для $D"
+echo "--- DNS через DoH ---"
+res=$(nslookup "$D" 127.0.0.1 2>/dev/null)
+v4=$(printf "%s" "$res" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | grep -v "^127\.0\.0\.1$" | head -1)
+v6=$(printf "%s" "$res" | grep -oiE "([0-9a-f]{0,4}:){2,}[0-9a-f]{0,4}" | head -1)
+[ -n "$v4" ] && echo "  A:    $v4" || echo "  ✗ нет A-записи (v4)"
+[ -n "$v6" ] && echo "  AAAA: $v6"
+echo "--- в наборах прокси? ---"
+if [ -n "$v4" ]; then nft get element inet fw4 proxy4 "{ $v4 }" >/dev/null 2>&1 && echo "  ✓ $v4 в proxy4 (клиент пойдёт через ноду)" || echo "  ! $v4 НЕ в proxy4 (не проксируется)"; fi
+if [ -n "$v6" ]; then nft get element inet fw4 proxy6 "{ $v6 }" >/dev/null 2>&1 && echo "  ✓ $v6 в proxy6" || echo "  · $v6 не в proxy6 — ок, у клиентов LAN IPv6 выключен, они юзают A-запись"; fi
+echo "--- активная нода ---"
+sel=$(curl -s --max-time 4 "http://$API/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+node=$sel; [ "$sel" = "auto" ] && node=$(curl -s --max-time 4 "http://$API/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+[ -n "$node" ] && echo "  selector=$sel  нода=$node" || echo "  ! clash API не ответил"
+echo "--- QUIC ---"
+if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "  ✓ QUIC-блок включён"; else echo "  ! QUIC-блок выключен"; fi
+echo "--- краны ---"
+crontab -l 2>/dev/null | grep -E "geoblock|watchdog" | sed "s/^/  /" || echo "  ! нет geoblock/watchdog кранов"
+echo "готово"
+'
+
+# полный список ВСЕХ серверов селектора с живым пингом (одним запросом /group/proxy/delay)
+R_NODES='
+API="'"$API"'"
+b="http://$API"
+sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+au=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+active=$sel; [ "$sel" = "auto" ] && active=$au
+all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+[ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
+echo ":: пингую все ноды через прокси (до gstatic /generate_204)…"
+d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
+echo ""
+up=0; down=0
+for n in $all; do
+  [ "$n" = "auto" ] && continue
+  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+  if [ -z "$ms" ] && [ "$n" = "$active" ]; then
+    ms=$(curl -s --max-time 6 "$b/proxies/$n/delay?url=http://www.gstatic.com/generate_204&timeout=3000" | sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p")
+  fi
+  m="  "; [ "$n" = "$active" ] && m="=>"
+  if [ -n "$ms" ]; then
+    q="хорошо"; [ "$ms" -gt 250 ] 2>/dev/null && q="ок"; [ "$ms" -gt 450 ] 2>/dev/null && q="медленно"
+    printf "%s %-6s %5s ms   %s\n" "$m" "$n" "$ms" "$q"; up=$((up+1))
+  else
+    printf "%s %-6s %8s   %s\n" "$m" "$n" "-" "нет ответа"; down=$((down+1))
+  fi
+done
+echo ""
+echo "живых: $up, молчат: $down.  => активная: $active (selector=$sel; auto→$au)"
+echo "закрепить: имя ноды в поле выше; вернуть авто — кнопкой."
+'
+
+# алиас: то же самое (свежий пинг всех)
+R_NODE_TEST="$R_NODES"
+
+R_NODE_USE='
+API="'"$API"'"
+N=$1
+r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "http://$API/proxies/proxy" -d "{\"name\":\"$N\"}")
+[ "$r" = "204" ] && echo "✓ selector -> $N" || echo "✗ не переключилось (код $r, имя точное? нода в группе?)"
+'
+
+R_NODE_AUTO='
+API="'"$API"'"
+r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "http://$API/proxies/proxy" -d "{\"name\":\"auto\"}")
+[ "$r" = "204" ] && echo "✓ selector -> auto (авто-выбор быстрейшей)" || echo "✗ код $r"
+'
+
+R_DOMAINS_LIST='
+n=$(uci -q get dhcp.@ipset[0].domain | tr " " "\n" | sort | grep .)
+echo ":: проксируемых доменов (uci-ipset): $(printf "%s\n" "$n" | grep -c .)"
+echo ""
+printf "%s\n" "$n" | awk "{printf \"%4d  %s\n\", NR, \$0}"
+'
+
+R_DOMAINS_ADD='
+for d in "$@"; do
+  uci add_list dhcp.@ipset[0].domain="$d"
+  uci add_list dhcp.@ipset[1].domain="$d"
+  uci add_list dhcp.@dnsmasq[0].server="/$d/127.0.0.1#5053"
+  echo "  + $d"
+done
+uci commit dhcp && /etc/init.d/dnsmasq restart && echo "✓ применено (dnsmasq перезапущен)"
+'
+
+R_DOMAINS_RM='
+for d in "$@"; do
+  uci del_list dhcp.@ipset[0].domain="$d" 2>/dev/null
+  uci del_list dhcp.@ipset[1].domain="$d" 2>/dev/null
+  uci del_list dhcp.@dnsmasq[0].server="/$d/127.0.0.1#5053" 2>/dev/null
+  echo "  - $d"
+done
+uci commit dhcp && /etc/init.d/dnsmasq restart && echo "✓ убрано (dnsmasq перезапущен)"
+'
+
+R_GEO_UPDATE='[ -x /usr/sbin/geoblock-update ] && /usr/sbin/geoblock-update || sh /usr/sbin/geoblock-update'
+R_GEO_COUNT='[ -f /etc/dnsmasq.d/geoblock.conf ] && echo "geoblock: $(grep -c proxy4 /etc/dnsmasq.d/geoblock.conf) доменов" || echo "файла /etc/dnsmasq.d/geoblock.conf нет"'
+R_GEO_LIST='
+f=/etc/dnsmasq.d/geoblock.conf
+[ -f "$f" ] || { echo "файла geoblock нет"; exit 0; }
+n=$(sed -n "s|^nftset=/\([^/]*\)/.*|\1|p" "$f" | sort -u)
+echo ":: geoblock — автосписок ушедших из РФ сервисов ($(printf "%s\n" "$n" | grep -c .) доменов)"
+echo "   обновляется кроном; тянется с itdoginfo/allow-domains"
+echo ""
+printf "%s\n" "$n" | grep . | awk "{printf \"%4d  %s\n\", NR, \$0}"
+'
+R_WATCHDOG='[ -x /usr/sbin/proxy-watchdog ] && sh /usr/sbin/proxy-watchdog; echo "✓ сторож нод отработал"'
+
+# machine-readable мета для автозаголовка (модель/хост/подсеть подключённого роутера)
+R_META='
+m=$(cat /tmp/sysinfo/model 2>/dev/null || echo OpenWrt)
+h=$(uci -q get system.@system[0].hostname 2>/dev/null)
+ip=$(uci -q get network.lan.ipaddr 2>/dev/null)
+case "$ip" in
+  */*|"") lan="$ip" ;;
+  *) nm=$(uci -q get network.lan.netmask 2>/dev/null); c=0
+     for o in $(echo "${nm:-255.255.255.0}" | tr "." " "); do case $o in 255)c=$((c+8));;254)c=$((c+7));;252)c=$((c+6));;248)c=$((c+5));;240)c=$((c+4));;224)c=$((c+3));;192)c=$((c+2));;128)c=$((c+1));;esac; done
+     lan="$ip/$c" ;;
+esac
+echo "model=$m"; echo "host=$h"; echo "lan=$lan"
+'
+
+# развёрнутая системная инфа
+R_INFO='
+API="'"$API"'"
+echo "=== роутер ==="
+echo "модель:   $(cat /tmp/sysinfo/model 2>/dev/null || echo ?)"
+echo "хост:     $(uci -q get system.@system[0].hostname 2>/dev/null)"
+d=$(. /etc/openwrt_release 2>/dev/null; echo "$DISTRIB_DESCRIPTION"); echo "прошивка: ${d:-?}"
+echo "ядро:     $(uname -r)"
+up=$(cut -d. -f1 /proc/uptime 2>/dev/null); [ -n "$up" ] && echo "аптайм:   $((up/86400))д $((up%86400/3600))ч $((up%3600/60))м"
+echo "нагрузка: $(cut -d" " -f1-3 /proc/loadavg 2>/dev/null)"
+echo "память:   $(free 2>/dev/null | awk "/^Mem/{printf \"%d/%d МБ занято\", \$3/1024, \$2/1024}")"
+echo ""
+echo "=== сеть ==="
+lip=$(uci -q get network.lan.ipaddr); lnm=$(uci -q get network.lan.netmask)
+case "$lip" in */*) echo "LAN:      $lip";; *) echo "LAN:      $lip${lnm:+ / $lnm}";; esac
+w=$(ubus call network.interface.wan status 2>/dev/null | sed -n "s/.*\"address\": *\"\([0-9.]*\)\".*/\1/p" | head -1)
+echo "WAN IP:   ${w:-?}"
+echo ""
+echo "=== обход ==="
+echo "sing-box: $(sing-box version 2>/dev/null | head -1)"
+sel=$(curl -s --max-time 4 "http://$API/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+node=$sel; [ "$sel" = auto ] && node=$(curl -s --max-time 4 "http://$API/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+echo "нода:     ${node:-?} (selector=$sel)"
+echo "домены:   прокси $(uci -q get dhcp.@ipset[0].domain | wc -w) + geoblock $(grep -c proxy4 /etc/dnsmasq.d/geoblock.conf 2>/dev/null || echo 0)"
+echo "zapret:   $(pidof nfqws 2>/dev/null | wc -w) nfqws-процессов"
+'
+
+R_QUIC_ON='uci set firewall.block_quic.enabled="1"; uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1; echo "✓ QUIC-блок включён"'
+R_QUIC_OFF='uci set firewall.block_quic.enabled="0"; uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1; echo "✓ QUIC-блок выключен"'
+
+svc_ok() { case "$1" in sing-box|zapret|dnsmasq|https-dns-proxy|firewall) return 0;; *) return 1;; esac; }
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  status)   remote "$R_STATUS" ;;
+  doctor)   remote "$R_DOCTOR" "${1:-$DOCTOR_DOMAIN}" ;;
+  restart)
+    s="${1:-}"; svc_ok "$s" || { echo "нельзя рестартить: $s"; exit 1; }
+    remote "/etc/init.d/$s restart && echo \"✓ $s перезапущен\"" ;;
+  nodes)
+    case "${1:-list}" in
+      list) remote "$R_NODES" ;;
+      test) remote "$R_NODE_TEST" ;;
+      auto) remote "$R_NODE_AUTO" ;;
+      use)  shift; [ $# -ge 1 ] || { echo "rctl nodes use ИМЯ"; exit 1; }; remote "$R_NODE_USE" "$1" ;;
+      *) echo "nodes list|test|use ИМЯ|auto"; exit 1 ;;
+    esac ;;
+  domains)
+    case "${1:-list}" in
+      list) remote "$R_DOMAINS_LIST" ;;
+      add)  shift; [ $# -ge 1 ] || { echo "rctl domains add ДОМЕН…"; exit 1; }; remote "$R_DOMAINS_ADD" "$@" ;;
+      rm)   shift; [ $# -ge 1 ] || { echo "rctl domains rm ДОМЕН"; exit 1; }; remote "$R_DOMAINS_RM" "$@" ;;
+      *) echo "domains list|add ДОМЕН…|rm ДОМЕН"; exit 1 ;;
+    esac ;;
+  geoblock)
+    case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
+  info)     remote "$R_INFO" ;;
+  meta)     remote "$R_META" ;;
+  getconfig) $SSH "cat $SBOX" ;;                       # выдать текущий sing-box config.json
+  putconfig)                                            # залить новый config (с бэкапом/проверкой/откатом)
+    f="${1:-}"; [ -f "$f" ] || { echo "нет файла: $f"; exit 1; }
+    # льём через ssh 'cat >' (не scp — на dropbear-роутере нет sftp-server)
+    $SSH "cat > /tmp/sb-new.json" < "$f" || { echo "✗ не удалось передать config на роутер"; exit 1; }
+    remote '
+      ts=$(date +%Y%m%d-%H%M%S)
+      if sing-box check -c /tmp/sb-new.json 2>/tmp/sbchk.err; then
+        cp /etc/sing-box/config.json /etc/sing-box/config.json.bak-$ts
+        mv /tmp/sb-new.json /etc/sing-box/config.json
+        /etc/init.d/sing-box restart >/dev/null 2>&1; sleep 2
+        if pidof sing-box >/dev/null 2>&1; then
+          echo "✓ config обновлён, sing-box поднялся (бэкап: config.json.bak-$ts)"
+        else
+          echo "✗ sing-box НЕ поднялся — откатываю"
+          cp /etc/sing-box/config.json.bak-$ts /etc/sing-box/config.json
+          /etc/init.d/sing-box restart >/dev/null 2>&1; echo "  откат готов"
+        fi
+      else
+        echo "✗ новый config не прошёл sing-box check — НЕ применяю:"; cat /tmp/sbchk.err; rm -f /tmp/sb-new.json
+      fi
+    ' ;;
+  rotate)                                               # ротация подписки: gazvpn меняет только uuid — переписать его в нодах
+    new="${1:-}"; old="${2:-}"
+    U='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    echo "$new" | grep -qE "$U" \
+      || { echo "rotate НОВЫЙ-UUID [СТАРЫЙ-UUID]   (старый нужен, если в конфиге ноды разных подписок)"; exit 1; }
+    [ -z "$old" ] || echo "$old" | grep -qE "$U" || { echo "кривой СТАРЫЙ-UUID: $old"; exit 1; }
+    remote '
+      new="$1"; old="${2:-}"
+      ts=$(date +%Y%m%d-%H%M%S)
+      distinct=$(grep -o "\"uuid\": *\"[0-9a-fA-F-]\{36\}\"" /etc/sing-box/config.json | sort -u | wc -l)
+      if [ -z "$old" ] && [ "$distinct" -gt 1 ]; then
+        echo "✗ в конфиге $distinct разных uuid (несколько подписок?) — укажи, какой менять: rctl rotate НОВЫЙ СТАРЫЙ"
+        exit 1
+      fi
+      [ -z "$old" ] && old="[0-9a-fA-F-]{36}"
+      n=$(grep -cE "\"uuid\": *\"$old\"" /etc/sing-box/config.json || true)
+      cp /etc/sing-box/config.json /etc/sing-box/config.json.bak-$ts
+      sed -r "s/\"uuid\": *\"$old\"/\"uuid\": \"$new\"/g" /etc/sing-box/config.json.bak-$ts > /tmp/sb-new.json
+      if cmp -s /tmp/sb-new.json /etc/sing-box/config.json; then
+        echo "✓ uuid уже актуален во всех нодах — менять нечего"; rm -f /tmp/sb-new.json /etc/sing-box/config.json.bak-$ts; exit 0
+      fi
+      if sing-box check -c /tmp/sb-new.json 2>/tmp/sbchk.err; then
+        mv /tmp/sb-new.json /etc/sing-box/config.json
+        /etc/init.d/sing-box restart >/dev/null 2>&1; sleep 2
+        if pidof sing-box >/dev/null 2>&1; then
+          echo "✓ uuid обновлён ($n нод), sing-box поднялся (бэкап: config.json.bak-$ts)"
+        else
+          echo "✗ sing-box НЕ поднялся — откатываю"
+          cp /etc/sing-box/config.json.bak-$ts /etc/sing-box/config.json
+          /etc/init.d/sing-box restart >/dev/null 2>&1; echo "  откат готов"
+        fi
+      else
+        echo "✗ config не прошёл sing-box check — НЕ применяю:"; cat /tmp/sbchk.err; rm -f /tmp/sb-new.json
+      fi
+    ' "$new" "$old" ;;
+  watchdog) remote "$R_WATCHDOG" ;;
+  quic)
+    case "${1:-}" in on) remote "$R_QUIC_ON" ;; off) remote "$R_QUIC_OFF" ;; *) echo "quic on|off"; exit 1;; esac ;;
+  logs)
+    s="${1:-sing-box}"
+    case "$s" in
+      sing-box) remote 'logread -e sing-box | tail -60' ;;
+      zapret)   remote 'logread -e zapret | tail -60; echo "--- nfqws ---"; ps w | grep -c "[n]fqws"' ;;
+      dns)      remote 'logread -e dnsmasq | tail -60' ;;
+      *) echo "logs sing-box|zapret|dns"; exit 1 ;;
+    esac ;;
+  ssh) exec $SSH ;;
+  help|*) cat <<EOF
+rctl — пульт к твоему живому роутеру ($ROUTER_IP).
+
+  rctl status                состояние сервисов, активная нода, домены, QUIC
+  rctl doctor [домен]        чекап: DNS→proxy4→нода→QUIC→краны
+  rctl restart sing-box|zapret|dnsmasq|https-dns-proxy
+  rctl nodes list|test|use ИМЯ|auto      живые ноды через clash API :9090
+  rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
+  rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
+  rctl info                  система: модель, прошивка, аптайм, WAN, версии
+  rctl meta                  модель/хост/подсеть (для заголовка панели)
+  rctl rotate UUID [СТАРЫЙ]  ротация подписки: сменить uuid в нодах (старый — если подписок несколько)
+  rctl watchdog              прогнать сторож нод сейчас
+  rctl quic on|off           блок QUIC (udp/443)
+  rctl logs sing-box|zapret|dns
+  rctl ssh                   шелл на роутер
+EOF
+  ;;
+esac

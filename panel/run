@@ -1,0 +1,23 @@
+#!/bin/sh
+# Запуск веб-панели живого роутера (Linux/macOS). Нужен python3 + ssh.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PY=""
+for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
+[ -n "$PY" ] || { echo "нужен Python 3"; exit 1; }
+
+# ярлык в меню (Linux, один раз)
+if [ "$(uname)" = "Linux" ] && [ -n "${HOME:-}" ]; then
+  d="$HOME/.local/share/applications/router-panel.desktop"
+  [ -f "$d" ] || { mkdir -p "$HOME/.local/share/applications"; cat > "$d" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Панель роутера
+Comment=Управление живым роутером (обход блокировок)
+Exec=$DIR/run
+Icon=network-wireless
+Terminal=false
+Categories=Network;System;
+EOF
+  chmod +x "$d" 2>/dev/null || true; }
+fi
+exec "$PY" "$DIR/web/server.py" "$@"

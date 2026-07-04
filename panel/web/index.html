@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Роутер — панель</title>
+<style>
+  :root{
+    --bg:#0d1017; --panel:#141821; --panel2:#1a1f2b; --line:#252b39;
+    --txt:#e6e9ef; --muted:#8b95a7; --accent:#66c0f4; --accent-d:#2a7ab0;
+    --ok:#3fb950; --bad:#f85149; --warn:#d6a339; --con:#0a0c11; --r:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0; background:var(--bg); color:var(--txt);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-text-size-adjust:100%}
+  button{font-family:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2c3444;border-radius:8px}
+  header{position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:12px 18px; background:linear-gradient(180deg,#141a25,#10141c); border-bottom:1px solid var(--line)}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:700; font-size:17px}
+  .brand .logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(135deg,#2a7ab0,#66c0f4); font-size:16px}
+  .brand .sub{font-weight:500; font-size:12px; color:var(--muted)}
+  .router-pill{display:flex; align-items:center; gap:8px; margin-left:auto; background:var(--panel2);
+    border:1px solid var(--line); color:var(--txt); padding:8px 14px; border-radius:999px; cursor:pointer;
+    font-size:14px; min-height:40px}
+  .router-pill:hover{border-color:var(--accent)}
+  .router-pill .ip{font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%;background:#556; flex:none}
+  .dot.ok{background:var(--ok); box-shadow:0 0 0 4px rgba(63,185,80,.16)}
+  .dot.bad{background:var(--bad); box-shadow:0 0 0 4px rgba(248,81,73,.16)}
+  main{display:grid; grid-template-columns:380px 1fr; gap:16px; padding:16px; max-width:1280px; margin:0 auto}
+  @media(max-width:900px){ main{grid-template-columns:1fr} }
+  .col{display:flex; flex-direction:column; gap:14px; min-width:0}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:14px}
+  .card h2{margin:0 0 10px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700}
+  .chips{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .chip{display:flex; align-items:center; gap:9px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:10px; padding:9px 11px; font-size:13.5px}
+  .chip .dot{width:9px;height:9px}
+  .chip .lbl{color:var(--muted)}
+  .chip .val{margin-left:auto; font-weight:600}
+  .btn{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:48px;
+    padding:0 14px; border-radius:11px; cursor:pointer; background:var(--panel2); color:var(--txt);
+    border:1px solid var(--line); font-size:15px; font-weight:600; transition:transform .05s, border-color .15s}
+  .btn:hover{border-color:var(--accent)}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+  .btn.primary{background:linear-gradient(135deg,var(--accent-d),var(--accent)); border-color:transparent; color:#04121b}
+  .btn.ghost{background:transparent}
+  .btn.sm{min-height:40px; font-size:14px}
+  .btn.wide{grid-column:1/-1}
+  .btn .ic{font-size:17px; line-height:1}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px}
+  .grid1{display:grid; gap:9px}
+  .seg{display:flex; gap:8px}
+  .seg .btn{flex:1}
+  .seg .lbl{align-self:center;color:var(--muted);width:84px; font-size:13px}
+  .hint{color:var(--muted); font-size:12.5px; margin:6px 0 0}
+  .row{display:flex; gap:8px; align-items:center}
+  input[type=text],textarea{width:100%; background:var(--con); color:var(--txt); border:1px solid var(--line);
+    border-radius:10px; padding:11px 12px; font-size:14px; font-family:inherit}
+  input:focus,textarea:focus{outline:none; border-color:var(--accent)}
+  textarea{resize:vertical; min-height:120px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px}
+  .console-wrap{display:flex; flex-direction:column; height:100%; min-height:460px}
+  .console-head{display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--panel);
+    border:1px solid var(--line); border-bottom:none; border-radius:var(--r) var(--r) 0 0}
+  .console-head .title{font-weight:600; font-size:14px}
+  .console-head .spin{width:16px;height:16px;border-radius:50%;border:2px solid #33405a;border-top-color:var(--accent);
+    animation:spin .7s linear infinite; display:none}
+  .console-head.running .spin{display:block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .rc{margin-left:auto; font-size:12.5px; font-weight:700; padding:3px 9px; border-radius:999px; display:none}
+  .rc.ok{display:inline;background:rgba(63,185,80,.15); color:var(--ok)}
+  .rc.bad{display:inline;background:rgba(248,81,73,.15); color:var(--bad)}
+  .console{flex:1; overflow:auto; background:var(--con); border:1px solid var(--line); border-top:none;
+    border-radius:0 0 var(--r) var(--r); padding:12px 14px; margin:0;
+    font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word; color:#c9d4e5}
+  .console .l-ok{color:#7ee787}.console .l-bad{color:#ff9b93}.console .l-warn{color:#e3c26a}
+  .console .l-mut{color:#7d8797}.console .l-hdr{color:#79c0ff; font-weight:600}
+  .console .placeholder{color:var(--muted)}
+  .backdrop{position:fixed; inset:0; background:rgba(4,7,12,.66); backdrop-filter:blur(3px);
+    display:none; align-items:center; justify-content:center; z-index:40; padding:16px}
+  .backdrop.open{display:flex}
+  .modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; width:min(480px,100%); padding:20px}
+  .modal h3{margin:0 0 4px; font-size:18px}
+  .modal .sub{color:var(--muted); font-size:13px; margin:0 0 16px}
+  .field{margin-bottom:14px}
+  .field label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600}
+  .modal-actions{display:flex; gap:10px; margin-top:8px}
+  .modal-actions .btn{flex:1}
+  .three{display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px}
+  .warn-banner{background:rgba(214,163,57,.12); border:1px solid rgba(214,163,57,.4); color:#e3c26a;
+    border-radius:10px; padding:9px 12px; font-size:12.5px; margin:0 0 14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">📡</span><div>Панель роутера<div class="sub" id="hdrModel">подключаюсь…</div></div></div>
+  <button class="router-pill" id="routerPill" title="Настройки подключения">
+    <span class="dot" id="hdrDot"></span><span><span class="ip" id="hdrIp">…</span></span>
+    <span style="color:var(--muted)">⚙</span>
+  </button>
+</header>
+
+<main>
+  <div class="col">
+    <div class="card">
+      <h2>Обзор</h2>
+      <div class="chips">
+        <div class="chip"><span class="dot" data-svc="proxy"></span><span class="lbl">sing-box</span><span class="val" data-val="proxy">—</span></div>
+        <div class="chip"><span class="dot" data-svc="zapret"></span><span class="lbl">zapret</span><span class="val" data-val="zapret">—</span></div>
+        <div class="chip"><span class="dot" data-svc="dns"></span><span class="lbl">DoH</span><span class="val" data-val="dns">—</span></div>
+        <div class="chip"><span class="dot" data-svc="node"></span><span class="lbl">нода</span><span class="val" data-val="node">—</span></div>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <button class="btn primary" data-run="status"><span class="ic">↻</span> Статус</button>
+        <button class="btn" data-run="doctor"><span class="ic">🩺</span> Чекап</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Серверы (clash API :9090)</h2>
+      <button class="btn primary wide" data-run="nodes"><span class="ic">📶</span> Все серверы + пинг</button>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="nodeUse" placeholder="имя ноды: pl, de1, ee…" style="flex:1">
+        <button class="btn sm" id="btnNodeUse" style="width:auto;padding:0 16px">Закрепить</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="nodeDel" placeholder="имя ноды для удаления" style="flex:1">
+        <button class="btn sm ghost" id="btnNodeDel" style="width:auto;padding:0 16px;border-color:#5a3030;color:#f0a0a0">Удалить</button>
+      </div>
+      <button class="btn sm ghost wide" data-run="nodes-auto" style="margin-top:8px">Вернуть авто-выбор</button>
+      <button class="btn primary wide" id="btnAddNode" style="margin-top:8px"><span class="ic">＋</span> Добавить сервер (vless/JSON)</button>
+      <button class="btn wide" id="btnRotate" style="margin-top:8px"><span class="ic">🔄</span> Ротация подписки (сменился uuid)</button>
+      <p class="hint">Пингует все ноды разом (мс, ▶ = активная). «Добавить сервер» — вставь ссылку vless:// или JSON из Happ, нода впишется в config.json роутера (с бэкапом и проверкой). «Ротация» — если после обновления подписки всё отвалилось: gazvpn меняет только uuid, кнопка перепишет его во всех нодах разом.</p>
+    </div>
+
+    <div class="card">
+      <h2>Домены через ноду (uci-ipset)</h2>
+      <button class="btn sm wide" data-run="domains-list">Показать список</button>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="domAdd" placeholder="figma.com reddit.com">
+        <button class="btn sm" id="btnDomAdd" style="width:auto;padding:0 16px">Добавить</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="domRm" placeholder="netflix.com">
+        <button class="btn sm ghost" id="btnDomRm" style="width:auto;padding:0 16px">Убрать</button>
+      </div>
+      <p class="hint">Добавляет в proxy4/proxy6 + чистый DoH-резолв и перезапускает dnsmasq.</p>
+    </div>
+
+    <div class="card">
+      <h2>Сервисы — перезапуск</h2>
+      <div class="grid2">
+        <button class="btn sm" data-run="restart-singbox">sing-box</button>
+        <button class="btn sm" data-run="restart-zapret">zapret</button>
+        <button class="btn sm" data-run="restart-dns">dnsmasq</button>
+        <button class="btn sm" data-run="restart-doh">https-dns-proxy</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>geoblock — ушедшие из РФ сервисы</h2>
+      <div class="grid2">
+        <button class="btn sm" data-run="geoblock-list">Показать все домены</button>
+        <button class="btn sm" data-run="geoblock-update">Обновить список</button>
+      </div>
+      <p class="hint">Список (~460 доменов) тянется кроном с itdoginfo/allow-domains и весь идёт через ноду.</p>
+    </div>
+
+    <div class="card">
+      <h2>Спец</h2>
+      <div class="grid1">
+        <div class="seg"><span class="lbl">QUIC-блок</span>
+          <button class="btn sm" data-run="quic-on" title="REJECT udp/443: плееры откатываются на пробитый TCP">Вкл</button>
+          <button class="btn sm ghost" data-run="quic-off">Выкл</button></div>
+        <button class="btn sm wide" data-run="watchdog" title="если нода упала — пересобрать пул и вернуть инет">Прогнать сторож нод</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Инфо и логи</h2>
+      <div class="grid2">
+        <button class="btn primary" data-run="info"><span class="ic">ℹ</span> Инфо о системе</button>
+        <button class="btn ghost" id="btnConn">Подключение…</button>
+        <button class="btn sm" data-log="sing-box">Лог sing-box</button>
+        <button class="btn sm" data-log="zapret">Лог zapret</button>
+        <button class="btn sm" data-log="dns">Лог dnsmasq</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="console-wrap">
+      <div class="console-head" id="conHead">
+        <div class="spin"></div><span class="title" id="conTitle">Готово к работе</span>
+        <span class="rc" id="conRc"></span>
+      </div>
+      <pre class="console" id="con"><span class="placeholder">Нажми «Статус». Панель ходит по SSH к твоему живому роутеру и показывает реальное состояние.</span></pre>
+    </div>
+  </div>
+</main>
+
+<div class="backdrop" id="mNode">
+  <div class="modal">
+    <h3>Добавить сервер</h3>
+    <p class="sub">Вставь ссылку <code>vless://…</code> или весь JSON-конфиг из Happ («Поделиться» / экспорт). Можно несколько. Нода впишется в <code>config.json</code> роутера — с бэкапом, проверкой <code>sing-box check</code> и авто-откатом.</p>
+    <div class="field"><textarea id="nodeText" placeholder="vless://…&#10;— или —&#10;{ &quot;outbounds&quot;: [ … ] }"></textarea></div>
+    <div class="row"><button class="btn sm ghost" id="btnPaste" style="width:auto;padding:0 16px">📋 Вставить из буфера</button></div>
+    <label class="row" style="margin-top:8px;gap:8px;align-items:center;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="nodeAuto" checked style="width:auto">
+      <span>добавить в auto-пул (сними для РФ/игровых нод — иначе они перехватят весь прокси-трафик)</span>
+    </label>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Отмена</button>
+      <button class="btn primary" id="btnNodeGo">Добавить и применить</button>
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="mRotate">
+  <div class="modal">
+    <h3>Ротация подписки</h3>
+    <p class="sub">Обновил подписку в Happ и всё отвалилось? gazvpn при ротации меняет <b>только uuid</b> — сервера и ключи остаются. Вставь любую новую <code>vless://…</code>-ссылку или JSON из Happ: uuid перепишется в нодах этой подписки (с бэкапом и проверкой). Если в конфиге живут ноды <b>нескольких</b> подписок — вставляй именно ссылку/JSON (по адресу сервера панель поймёт, чьи ноды ротировать); голый uuid годится, только пока подписка одна. Если сменились и адреса серверов — добавь их через «Добавить сервер».</p>
+    <div class="field"><textarea id="rotText" placeholder="vless://xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx@1.2.3.4:52250?…&#10;— или JSON из Happ, или голый uuid —&#10;xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></textarea></div>
+    <div class="row"><button class="btn sm ghost" id="btnRotPaste" style="width:auto;padding:0 16px">📋 Вставить из буфера</button></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Отмена</button>
+      <button class="btn primary" id="btnRotGo">Сменить uuid и применить</button>
+    </div>
+  </div>
+</div>
+
+<div class="backdrop" id="mConn">
+  <div class="modal">
+    <h3>Подключение к роутеру</h3>
+    <p class="sub">Куда ходить по SSH. Ключ уже должен быть заброшен на роутер (вход без пароля).</p>
+    <div class="warn-banner">Панель управляет реальным роутером. Убедись, что Дек на Wi-Fi <b>kv_52</b> (а не на роутере Ростелекома с тем же именем).</div>
+    <div class="three">
+      <div class="field"><label>IP</label><input type="text" id="cfgIp" placeholder="192.168.1.1"></div>
+      <div class="field"><label>SSH-юзер</label><input type="text" id="cfgUser" placeholder="root"></div>
+      <div class="field"><label>Порт</label><input type="text" id="cfgPort" placeholder="22"></div>
+    </div>
+    <div class="field"><label>Тест-домен для «Чекап»</label><input type="text" id="cfgDom" placeholder="claude.ai"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Отмена</button>
+      <button class="btn primary" id="btnSaveCfg">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN="__TOKEN__";
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const H={"X-Token":TOKEN,"Content-Type":"application/json"};
+const con=$("#con"),conHead=$("#conHead"),conTitle=$("#conTitle"),conRc=$("#conRc");
+let busy=false;
+
+function clearCon(t){con.innerHTML="";conTitle.textContent=t;conRc.className="rc";conRc.textContent="";conHead.classList.add("running")}
+function lineClass(t){
+  if(/^\s*(✓|✔)/.test(t))return"l-ok";
+  if(/^\s*(✗|✘|ошибк|fail|не ответил|НЕ )/i.test(t))return"l-bad";
+  if(/^\s*(!|⚠)/.test(t))return"l-warn";
+  if(/^\s*::/.test(t))return"l-mut";
+  if(/^===|^---/.test(t))return"l-hdr";
+  return"";
+}
+function appendLine(t){const s=document.createElement("span");const c=lineClass(t);if(c)s.className=c;
+  s.textContent=t+"\n";con.appendChild(s);con.scrollTop=con.scrollHeight;scanStatus(t)}
+function finish(rc){conHead.classList.remove("running");conRc.className="rc "+(rc===0?"ok":"bad");
+  conRc.textContent=rc===0?"готово ✓":("код "+rc);$("#hdrDot").className="dot "+(rc===0?"ok":"bad");busy=false}
+
+async function runStream(title,{action,args,method="GET"}){
+  if(busy)return; busy=true; clearCon(title);
+  let url="/api/run",opt;
+  if(method==="GET"){const p=new URLSearchParams({action,t:TOKEN});(args||[]).forEach(a=>p.append("arg",a));
+    url+="?"+p; opt={headers:{"X-Token":TOKEN}};}
+  else opt={method:"POST",headers:H,body:JSON.stringify({action,args})};
+  let res; try{res=await fetch(url,opt)}catch(e){appendLine("[нет связи с сервером панели: "+e+"]");finish(1);return}
+  if(!res.ok){appendLine("["+res.status+" "+(await res.text())+"]");finish(1);return}
+  const rd=res.body.getReader(),dec=new TextDecoder();let buf="",rc=0;
+  for(;;){const{value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
+    while((i=buf.indexOf("\n\n"))>=0){const fr=buf.slice(0,i);buf=buf.slice(i+2);
+      let ev="message",d="";fr.split("\n").forEach(l=>{if(l.startsWith("event: "))ev=l.slice(7);else if(l.startsWith("data: "))d=l.slice(6)});
+      if(!d)continue;let p;try{p=JSON.parse(d)}catch{p=d}
+      if(ev==="line")appendLine(p);else if(ev==="done")rc=p.rc;}}
+  finish(rc);
+}
+
+$$("[data-run]").forEach(b=>b.addEventListener("click",()=>runStream(b.textContent.trim(),{action:b.dataset.run})));
+$$("[data-log]").forEach(b=>b.addEventListener("click",()=>runStream("Лог "+b.dataset.log,{action:"logs",args:[b.dataset.log],method:"POST"})));
+$("#btnNodeUse").addEventListener("click",()=>{const v=$("#nodeUse").value.trim();
+  if(!/^[A-Za-z0-9._-]+$/.test(v)){$("#nodeUse").focus();return}
+  runStream("Закрепляю ноду "+v,{action:"nodes-use",args:[v],method:"POST"});$("#nodeUse").value=""});
+// общий POST-стример для эндпоинтов, отдающих SSE (delnode/addnode/rotate)
+async function postStream(title,url,body){
+  if(busy)return; busy=true; clearCon(title);
+  let res; try{res=await fetch(url,{method:"POST",headers:H,body:JSON.stringify(body)})}
+  catch(e){appendLine("[нет связи: "+e+"]");finish(1);return}
+  if(!res.ok){appendLine("["+res.status+" "+(await res.text())+"]");finish(1);return}
+  const rd=res.body.getReader(),dec=new TextDecoder();let buf="",rc=0;
+  for(;;){const{value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
+    while((i=buf.indexOf("\n\n"))>=0){const fr=buf.slice(0,i);buf=buf.slice(i+2);
+      let ev="message",d="";fr.split("\n").forEach(l=>{if(l.startsWith("event: "))ev=l.slice(7);else if(l.startsWith("data: "))d=l.slice(6)});
+      if(!d)continue;let p;try{p=JSON.parse(d)}catch{p=d}
+      if(ev==="line")appendLine(p);else if(ev==="done")rc=p.rc}}
+  finish(rc);
+}
+$("#btnNodeDel").addEventListener("click",()=>{
+  const v=$("#nodeDel").value.trim();
+  if(!/^[A-Za-z0-9._-]+$/.test(v)){$("#nodeDel").focus();return}
+  if(!confirm("Удалить сервер «"+v+"» из config.json роутера? (бэкап и проверка sing-box сохранятся)"))return;
+  $("#nodeDel").value="";
+  postStream("Удаляю сервер "+v,"/api/delnode",{tag:v});
+});
+$("#btnDomAdd").addEventListener("click",()=>{const v=$("#domAdd").value.trim();if(!v)return;
+  runStream("Добавляю домены",{action:"domains-add",args:v.split(/\s+/),method:"POST"});$("#domAdd").value=""});
+$("#btnDomRm").addEventListener("click",()=>{const v=$("#domRm").value.trim();if(!v)return;
+  runStream("Убираю домен",{action:"domains-rm",args:[v],method:"POST"});$("#domRm").value=""});
+
+const open=id=>$(id).classList.add("open"),close=id=>$(id).classList.remove("open");
+$$("[data-close]").forEach(b=>b.addEventListener("click",e=>e.target.closest(".backdrop").classList.remove("open")));
+$$(".backdrop").forEach(bd=>bd.addEventListener("click",e=>{if(e.target===bd)bd.classList.remove("open")}));
+
+// добавление сервера (vless-ссылка или xray-JSON) — правит config.json роутера
+$("#btnAddNode").addEventListener("click",()=>{$("#nodeText").value="";open("#mNode")});
+$("#btnPaste").addEventListener("click",async()=>{try{$("#nodeText").value=await navigator.clipboard.readText()}catch{$("#nodeText").focus()}});
+$("#btnNodeGo").addEventListener("click",()=>{
+  const text=$("#nodeText").value.trim(); if(!text){$("#nodeText").focus();return}
+  const auto=$("#nodeAuto").checked;
+  close("#mNode");
+  postStream("Добавляю сервер","/api/addnode",{text,auto});
+});
+
+// ротация подписки: gazvpn меняет только uuid — переписываем его во всех нодах
+$("#btnRotate").addEventListener("click",()=>{$("#rotText").value="";open("#mRotate")});
+$("#btnRotPaste").addEventListener("click",async()=>{try{$("#rotText").value=await navigator.clipboard.readText()}catch{$("#rotText").focus()}});
+$("#btnRotGo").addEventListener("click",()=>{
+  const text=$("#rotText").value.trim(); if(!text){$("#rotText").focus();return}
+  close("#mRotate");
+  postStream("Ротация подписки (uuid)","/api/rotate",{text});
+});
+
+async function loadConfig(){try{const c=await(await fetch("/api/config",{headers:{"X-Token":TOKEN}})).json();
+  $("#hdrIp").textContent=c.ROUTER_IP||"—";$("#cfgIp").value=c.ROUTER_IP||"";$("#cfgUser").value=c.ROUTER_SSH_USER||"";
+  $("#cfgPort").value=c.ROUTER_SSH_PORT||"";$("#cfgDom").value=c.DOCTOR_DOMAIN||"";return c}catch{return{}}}
+async function loadMeta(){try{const m=await(await fetch("/api/meta",{headers:{"X-Token":TOKEN}})).json();
+  if(m.model)$("#hdrModel").textContent=m.model;
+  if(m.lan)$("#hdrIp").textContent=m.lan;    // подставляем реальную модель+подсеть подключённого роутера
+}catch{}}
+$("#routerPill").addEventListener("click",()=>loadConfig().then(()=>open("#mConn")));
+$("#btnConn").addEventListener("click",()=>loadConfig().then(()=>open("#mConn")));
+$("#btnSaveCfg").addEventListener("click",async()=>{
+  await fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({
+    ROUTER_IP:$("#cfgIp").value.trim(),ROUTER_SSH_USER:$("#cfgUser").value.trim(),
+    ROUTER_SSH_PORT:$("#cfgPort").value.trim(),DOCTOR_DOMAIN:$("#cfgDom").value.trim()})});
+  await loadConfig();close("#mConn")});
+
+function setChip(svc,ok,val){const d=document.querySelector(`.dot[data-svc="${svc}"]`),v=document.querySelector(`.val[data-val="${svc}"]`);
+  if(d&&ok!==null)d.className="dot "+(ok?"ok":"bad");   // null = статус не ясен из строки → не трогаем чип
+  if(v&&val)v.textContent=val}
+function scanStatus(t){
+  const up=/(●\s*running|running|active|вкл|включ)/i.test(t), down=/(✗\s*stopped|stopped|выключ|not )/i.test(t);
+  const st=up?true:(down?false:null);
+  if(/sing-?box/i.test(t))setChip("proxy",st,up?"up":down?"down":null);
+  if(/zapret|nfqws/i.test(t))setChip("zapret",st,up?"up":down?"down":null);
+  if(/doh|https-dns|dnsmasq/i.test(t))setChip("dns",st,up?"up":down?"down":null);
+  const m=t.match(/нода:\s*([^\s]+)/i)||t.match(/selector сейчас:\s*([^\s]+)/i);
+  if(m&&m[1]!=="—")setChip("node",true,m[1]);
+}
+
+loadConfig(); loadMeta();
+if(location.hash==="#node")open("#mNode"); else if(location.hash==="#conn")loadConfig().then(()=>open("#mConn"));
+window.addEventListener("load",()=>{if(!location.hash)setTimeout(()=>$('[data-run="status"]').click(),250)});
+</script>
+</body>
+</html>
