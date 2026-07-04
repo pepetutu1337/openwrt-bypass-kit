@@ -7,3 +7,7 @@ config/nodes.list
 *.tmp
 *~
 scratch/
+
+# Python
+__pycache__/
+*.pyc
