@@ -380,7 +380,10 @@ LANIF="$LAN_IFACE"
 RPORT="$REDIRECT_PORT"
 TMP=/tmp/tg-cidr.txt
 log() { logger -t telegram-cidr "\$*"; echo "\$*"; }
-curl -fsSL -m 30 "\$URL" -o "\$TMP" 2>/dev/null || { log "download FAILED, оставляю старый список"; exit 1; }
+cerr=\$(curl -fsSL -m 30 "\$URL" -o "\$TMP" 2>&1); crc=\$?
+if [ "\$crc" != 0 ]; then
+  log "download FAILED (curl код \$crc): \$cerr, оставляю старый список"; exit 1
+fi
 v4n=\$(grep -cE '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\$' "\$TMP" || echo 0)
 [ "\$v4n" -ge 5 ] || { log "список подозрительно мал (v4=\$v4n), откат"; exit 1; }
 tmpc=\$(mktemp)

@@ -212,7 +212,16 @@ EXTRA=/etc/nftables.d/21-telegram-cidr-extra.nft
 URL=https://core.telegram.org/resources/cidr.txt
 TMP=/tmp/tg-cidr-live.txt
 [ -f "$BASE" ] || { echo "✗ нет $BASE — тут нет базовой настройки proxy4/6, обновлять некуда"; exit 1; }
-curl -fsSL -m 30 "$URL" -o "$TMP" 2>/dev/null || { echo "✗ скачать $URL не вышло"; exit 1; }
+cerr=$(curl -fsSL -m 30 "$URL" -o "$TMP" 2>&1); crc=$?
+if [ "$crc" != 0 ]; then
+  echo "✗ скачать $URL не вышло (curl код $crc)"
+  [ -n "$cerr" ] && echo "  $cerr"
+  ip=$(nslookup core.telegram.org 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
+  if [ -n "$ip" ]; then echo "  DNS резолвит core.telegram.org -> $ip — дело не в DNS (TLS/сеть/блок на IP?)"
+  else echo "  DNS НЕ резолвит core.telegram.org — см. rctl status (DoH жив?) или домен блокируется отдельно"; fi
+  ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && echo "  интернет на роутере есть (1.1.1.1 пингуется)" || echo "  ! даже 1.1.1.1 не пингуется — интернета на роутере нет?"
+  exit 1
+fi
 v4n=$(grep -cE "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" 2>/dev/null || echo 0)
 [ "$v4n" -ge 5 ] 2>/dev/null || { echo "✗ список подозрительно мал (v4=$v4n) — не трогаю"; exit 1; }
 cur=$(cat "$BASE" "$EXTRA" 2>/dev/null)
