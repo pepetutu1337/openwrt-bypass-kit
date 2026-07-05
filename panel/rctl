@@ -48,25 +48,62 @@ if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q g
 R_DOCTOR='
 D=${1:-claude.ai}
 API="'"$API"'"
-echo ":: чекап для $D"
-echo "--- DNS через DoH ---"
+echo ":: ПОЛНЫЙ чекап (тест-домен: $D)"
+echo ""
+echo "=== сервисы ==="
+for p in "sing-box:sing-box" "zapret:nfqws" "dnsmasq:dnsmasq" "DoH:https-dns-proxy"; do
+  n=${p%%:*}; b=${p##*:}
+  if pidof "$b" >/dev/null 2>&1; then echo "  ✓ $n работает"; else echo "  ✗ $n НЕ запущен"; fi
+done
+echo ""
+echo "=== DNS через DoH: $D ==="
 res=$(nslookup "$D" 127.0.0.1 2>/dev/null)
 v4=$(printf "%s" "$res" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | grep -v "^127\.0\.0\.1$" | head -1)
 v6=$(printf "%s" "$res" | grep -oiE "([0-9a-f]{0,4}:){2,}[0-9a-f]{0,4}" | head -1)
-[ -n "$v4" ] && echo "  A:    $v4" || echo "  ✗ нет A-записи (v4)"
-[ -n "$v6" ] && echo "  AAAA: $v6"
-echo "--- в наборах прокси? ---"
-if [ -n "$v4" ]; then nft get element inet fw4 proxy4 "{ $v4 }" >/dev/null 2>&1 && echo "  ✓ $v4 в proxy4 (клиент пойдёт через ноду)" || echo "  ! $v4 НЕ в proxy4 (не проксируется)"; fi
-if [ -n "$v6" ]; then nft get element inet fw4 proxy6 "{ $v6 }" >/dev/null 2>&1 && echo "  ✓ $v6 в proxy6" || echo "  · $v6 не в proxy6 — ок, у клиентов LAN IPv6 выключен, они юзают A-запись"; fi
-echo "--- активная нода ---"
+[ -n "$v4" ] && echo "  ✓ A:    $v4" || echo "  ✗ нет A-записи (v4) — проверь dnsmasq/DoH"
+[ -n "$v6" ] && echo "  · AAAA: $v6"
+if [ -n "$v4" ]; then nft get element inet fw4 proxy4 "{ $v4 }" >/dev/null 2>&1 && echo "  ✓ $v4 в proxy4 (пойдёт через ноду)" || echo "  ! $v4 НЕ в proxy4 (домен добавлен в проксируемые?)"; fi
+if [ -n "$v6" ]; then nft get element inet fw4 proxy6 "{ $v6 }" >/dev/null 2>&1 && echo "  ✓ $v6 в proxy6" || echo "  · $v6 не в proxy6 — ок, если у LAN-клиентов v6 выключен"; fi
+echo ""
+echo "=== активная нода ==="
 sel=$(curl -s --max-time 4 "http://$API/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 node=$sel; [ "$sel" = "auto" ] && node=$(curl -s --max-time 4 "http://$API/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
-[ -n "$node" ] && echo "  selector=$sel  нода=$node" || echo "  ! clash API не ответил"
-echo "--- QUIC ---"
-if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "  ✓ QUIC-блок включён"; else echo "  ! QUIC-блок выключен"; fi
-echo "--- краны ---"
-crontab -l 2>/dev/null | grep -E "geoblock|watchdog" | sed "s/^/  /" || echo "  ! нет geoblock/watchdog кранов"
-echo "готово"
+[ -n "$node" ] && echo "  ✓ selector=$sel  нода=$node" || echo "  ✗ clash API $API не ответил (sing-box запущен?)"
+echo ""
+echo "=== QUIC-блок ==="
+if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "  ✓ включён (REJECT udp/443 lan->wan)"; else echo "  ! выключен"; fi
+echo ""
+echo "=== split-DNS (РФ-сайты, тест www.vtb.ru) ==="
+rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
+[ -n "$rip" ] && echo "  ✓ www.vtb.ru -> $rip (РФ-резолв жив)" || echo "  ✗ www.vtb.ru не резолвится — проверь split-ru/дефолт DNS"
+echo ""
+echo "=== IPv6 на LAN (утечка мимо ноды) ==="
+ra=$(uci -q get dhcp.lan.ra 2>/dev/null)
+[ "$ra" = "disabled" ] && echo "  ✓ отключён — утечки нет" || echo "  ! dhcp.lan.ra=\"${ra:-?}\" — v6 может течь мимо ноды"
+echo ""
+echo "=== домены (uci-ipset) ==="
+dc=$(uci -q get dhcp.@ipset[0].domain 2>/dev/null | wc -w)
+echo "  проксируемых доменов: ${dc:-0}"
+echo ""
+echo "=== geoblock (ушедшие из РФ) ==="
+if [ -f /etc/dnsmasq.d/geoblock.conf ]; then echo "  ✓ $(grep -c proxy4 /etc/dnsmasq.d/geoblock.conf) доменов"
+else echo "  ✗ файла нет — geoblock update ни разу не запускался?"; fi
+echo ""
+echo "=== telegram CIDR (MTProto ходит по IP) ==="
+f=/etc/nftables.d/20-proxy.nft; e=/etc/nftables.d/21-telegram-cidr-extra.nft
+if [ -f "$f" ]; then
+  v4c=$(grep -ohE "[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}" "$f" "$e" 2>/dev/null | sort -u | wc -l)
+  echo "  ✓ $v4c диапазонов v4 (обновить: telegram-cidr update)"
+else echo "  · $f нет — Telegram CIDR тут не заведён этим способом"; fi
+echo ""
+echo "=== WAN ==="
+w=$(ubus call network.interface.wan status 2>/dev/null | sed -n "s/.*\"address\": *\"\([0-9.]*\)\".*/\1/p" | head -1)
+[ -n "$w" ] && echo "  ✓ WAN IP: $w" || echo "  ✗ WAN без адреса — интернета на роутере нет?"
+echo ""
+echo "=== кроны ==="
+crontab -l 2>/dev/null | grep -E "geoblock|watchdog|telegram-cidr" | sed "s/^/  /" || echo "  ! нет geoblock/watchdog/telegram-cidr в кроне"
+echo ""
+echo "готово — полный чекап завершён"
 '
 
 # полный список ВСЕХ серверов селектора с живым пингом (одним запросом /group/proxy/delay)
@@ -372,7 +409,7 @@ case "$cmd" in
 rctl — пульт к твоему живому роутеру ($ROUTER_IP).
 
   rctl status                состояние сервисов, активная нода, домены, QUIC
-  rctl doctor [домен]        чекап: DNS→proxy4→нода→QUIC→краны
+  rctl doctor [домен]        ПОЛНЫЙ чекап: сервисы→DNS→proxy4/6→нода→QUIC→split-RU→IPv6→домены→geoblock→telegram-cidr→WAN→краны
   rctl restart sing-box|zapret|dnsmasq|https-dns-proxy
   rctl toggle СЛУЖБА on|off  включить/выключить службу (без рестарта роутера)
   rctl nodes list|test|use ИМЯ|auto      живые ноды через clash API :9090
