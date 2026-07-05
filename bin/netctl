@@ -112,6 +112,14 @@ case "$cmd" in
   zapret)   $SSH "netkit zapret $*" ;;
   proxy)    $SSH "netkit proxy $*" ;;
   geoblock) $SSH "netkit geoblock $*" ;;
+  telegram-cidr) $SSH "netkit telegram-cidr $*" ;;
+  backup)
+    mkdir -p "$KIT_DIR/backups"
+    remote_f=$($SSH "netkit backup" | tail -1)
+    [ -n "$remote_f" ] || { echo "  ✗ backup не создался на роутере"; exit 1; }
+    out="$KIT_DIR/backups/router-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    get_file "$out" "$remote_f" && echo "  <- $out (сохранён локально — держи под рукой перед прошивкой)"
+    ;;
   ssh)      exec $SSH ;;                       # быстрый шелл на роутер
   help|-h|--help|"")
     cat <<EOF
@@ -136,9 +144,11 @@ netctl — пульт к OpenWrt-киту (обход блокировок).
   netctl zapret on|off|edit|check
   netctl proxy  on|off
   netctl geoblock update|on|off|count   авто-список ушедших из РФ сервисов
+  netctl telegram-cidr update|on|off|count   офиц. CIDR Telegram (core.telegram.org)
 
   netctl pull               забрать текущий конфиг с роутера в ./config (для git/бэкапа)
   netctl push               только залить конфиг, без перезапуска
+  netctl backup             sysupgrade-бэкап конфигов роутера → ./backups/ (перед прошивкой!)
   netctl ssh                открыть шелл на роутере
 
 Конфиг: config/kit.conf, config/nodes.list, config/domains.list …

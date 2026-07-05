@@ -7,6 +7,7 @@ config/nodes.list
 *.tmp
 *~
 scratch/
+backups/
 
 # Python
 __pycache__/

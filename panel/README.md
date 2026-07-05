@@ -29,6 +29,9 @@ uci-ipset `proxy4/6`, `https-dns-proxy` (:5053/:5054), zapret в `/opt/zapret`,
   перезапуск dnsmasq).
 - **Сервисы** — перезапуск sing-box / zapret / dnsmasq / https-dns-proxy.
 - **Спец** — geoblock обновить/счёт, QUIC-блок вкл/выкл, прогнать сторож нод.
+- **Telegram CIDR + бэкап** — счёт/обновление офиц. CIDR Telegram (core.telegram.org,
+  только аддитивно — новый диапазон идёт отдельным `21-telegram-cidr-extra.nft`, базовый
+  файл не трогается), бэкап конфигов перед прошивкой (`sysupgrade -b`, тянется в `panel/backups/`).
 - **Логи** — sing-box / zapret / dnsmasq (`logread`).
 
 ## Файлы

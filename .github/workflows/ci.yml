@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: sh -n на всех POSIX-скриптах
+        run: |
+          set -e
+          for f in router/netkit bin/netctl panel/rctl panel/run tools/xray-json-to-vless.sh tools/happ-live-nodes.sh; do
+            echo "== sh -n $f"
+            sh -n "$f"
+          done
+
+      - name: python -m py_compile на серверах
+        run: |
+          set -e
+          python3 -m py_compile webgui/server.py panel/web/server.py
+
+      - name: node --check на инлайн-скрипте панели
+        run: |
+          set -e
+          python3 - <<'PY'
+          import re
+          html = open("panel/web/index.html", encoding="utf-8").read()
+          m = re.search(r"<script>(.*)</script>", html, re.S)
+          open("/tmp/panel-inline.js", "w", encoding="utf-8").write(m.group(1))
+          PY
+          node --check /tmp/panel-inline.js
+
+      - name: HTML-теги панели сбалансированы (div/style/script)
+        run: |
+          python3 - <<'PY'
+          html = open("panel/web/index.html", encoding="utf-8").read()
+          checks = [("<div", "</div>"), ("<style>", "</style>"), ("<script>", "</script>")]
+          bad = [(o, c, html.count(o), html.count(c)) for o, c in checks if html.count(o) != html.count(c)]
+          if bad:
+              raise SystemExit(f"несбалансированные теги: {bad}")
+          print("html tags balanced")
+          PY
+
+      - name: dup id= в панели
+        run: |
+          python3 - <<'PY'
+          import re
+          html = open("panel/web/index.html", encoding="utf-8").read()
+          ids = re.findall(r'id="([^"]+)"', html)
+          dups = sorted({i for i in ids if ids.count(i) > 1})
+          if dups:
+              raise SystemExit(f"дублирующиеся id: {dups}")
+          print(f"no dup ids ({len(ids)} total)")
+          PY
+
+      - name: kit.conf.example не содержит боевых нод
+        run: |
+          if [ -f config/nodes.list ]; then
+            echo "config/nodes.list закоммичен в репо — это личные ноды, не должно быть в git!"
+            exit 1
+          fi
+          echo "ok — nodes.list не в репо (см. .gitignore)"

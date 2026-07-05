@@ -43,6 +43,8 @@ if /i "%CMD%"=="nodes"   ( %SSH% "netkit nodes %ARGS%"    & goto :eof )
 if /i "%CMD%"=="zapret"  ( %SSH% "netkit zapret %ARGS%"   & goto :eof )
 if /i "%CMD%"=="proxy"   ( %SSH% "netkit proxy %ARGS%"    & goto :eof )
 if /i "%CMD%"=="geoblock" ( %SSH% "netkit geoblock %ARGS%" & goto :eof )
+if /i "%CMD%"=="telegram-cidr" ( %SSH% "netkit telegram-cidr %ARGS%" & goto :eof )
+if /i "%CMD%"=="backup" ( call :backup & goto :eof )
 if /i "%CMD%"=="ssh"     ( %SSH% & goto :eof )
 
 echo netctl - пульт к OpenWrt-киту (Windows).
@@ -55,7 +57,20 @@ echo   netctl domains list ^| add D... ^| rm D...
 echo   netctl nodes   list ^| test ^| use N
 echo   netctl zapret  on ^| off ^| check
 echo   netctl proxy   on ^| off
+echo   netctl geoblock update ^| on ^| off ^| count
+echo   netctl telegram-cidr update ^| on ^| off ^| count
+echo   netctl backup             sysupgrade-бэкап конфигов в .\backups\ (перед прошивкой!)
 echo   netctl pull ^| push ^| ssh ^| logs
+goto :eof
+
+:backup
+if not exist "%KIT_DIR%\backups" mkdir "%KIT_DIR%\backups"
+for /f "delims=" %%R in ('%SSH% "netkit backup"') do set "REMOTE_F=%%R"
+if "%REMOTE_F%"=="" ( echo   x backup не создался на роутере & exit /b 1 )
+for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "TS=%%T"
+set "OUT=%KIT_DIR%\backups\router-backup-%TS%.tar.gz"
+%SSH% "cat %REMOTE_F%" > "%OUT%"
+echo   ^<- %OUT% (сохранён локально - держи под рукой перед прошивкой)
 goto :eof
 
 :setval

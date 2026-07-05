@@ -157,6 +157,59 @@ printf "%s\n" "$n" | grep . | awk "{printf \"%4d  %s\n\", NR, \$0}"
 '
 R_WATCHDOG='[ -x /usr/sbin/proxy-watchdog ] && sh /usr/sbin/proxy-watchdog; echo "✓ сторож нод отработал"'
 
+# telegram-cidr: MTProto ходит по IP, список статикой лежит в 20-proxy.nft (+доп.файл 21-*).
+# Read-only счётчик — просто считает CIDR-подобные токены в файлах (не разбирает структуру).
+R_TGCIDR_COUNT='
+f=/etc/nftables.d/20-proxy.nft; e=/etc/nftables.d/21-telegram-cidr-extra.nft
+[ -f "$f" ] || { echo "нет $f — статика Telegram CIDR на этом роутере не заведена этим путём"; exit 0; }
+v4=$(grep -ohE "[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}" "$f" $e 2>/dev/null | sort -u | wc -l)
+v6=$(grep -ohE "[0-9a-fA-F:]+:[0-9a-fA-F:]*/[0-9]{1,3}" "$f" $e 2>/dev/null | sort -u | wc -l)
+extra=""; [ -f "$e" ] && extra=" (+доп.файл 21-telegram-cidr-extra.nft)"
+echo "telegram CIDR: v4=$v4 v6=$v6$extra"
+'
+# Обновление — ТОЛЬКО аддитивное: новый список сверяется с уже применённым (base+extra),
+# новые диапазоны идут отдельным доп.файлом через "add element" (nft), исходный 20-proxy.nft не трогаем.
+R_TGCIDR_UPDATE='
+BASE=/etc/nftables.d/20-proxy.nft
+EXTRA=/etc/nftables.d/21-telegram-cidr-extra.nft
+URL=https://core.telegram.org/resources/cidr.txt
+TMP=/tmp/tg-cidr-live.txt
+[ -f "$BASE" ] || { echo "✗ нет $BASE — тут нет базовой настройки proxy4/6, обновлять некуда"; exit 1; }
+curl -fsSL -m 30 "$URL" -o "$TMP" 2>/dev/null || { echo "✗ скачать $URL не вышло"; exit 1; }
+v4n=$(grep -cE "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" 2>/dev/null || echo 0)
+[ "$v4n" -ge 5 ] 2>/dev/null || { echo "✗ список подозрительно мал (v4=$v4n) — не трогаю"; exit 1; }
+cur=$(cat "$BASE" "$EXTRA" 2>/dev/null)
+new4=$(grep -E "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" | while IFS= read -r c; do printf "%s\n" "$cur" | grep -qF "$c" || echo "$c"; done)
+new6=$(grep -E "^[0-9a-fA-F:]+/[0-9]{1,3}$" "$TMP" | while IFS= read -r c; do printf "%s\n" "$cur" | grep -qF "$c" || echo "$c"; done)
+if [ -z "$new4" ] && [ -z "$new6" ]; then echo "✓ уже актуально, новых CIDR нет"; exit 0; fi
+{
+  echo "# rctl telegram-cidr update $(date +%F), офиц. список $URL — доп.элементы, base-файл не менялся"
+  [ -n "$new4" ] && printf "add element inet fw4 proxy4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | paste -sd, -)"
+  [ -n "$new6" ] && printf "add element inet fw4 proxy6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | paste -sd, -)"
+} >> "$EXTRA"
+if nft -f "$EXTRA" 2>/tmp/nft-tgcidr.err; then
+  echo "✓ применено сразу + сохранено в $EXTRA (переживёт fw4 reload/ребут, $BASE не тронут)"
+  echo "  новых v4: $(printf "%s\n" "$new4" | grep -c .), новых v6: $(printf "%s\n" "$new6" | grep -c .)"
+else
+  echo "✗ nft отверг новые элементы (см. ниже) — $EXTRA всё равно дополнен, проверь руками:"
+  cat /tmp/nft-tgcidr.err
+fi
+'
+
+# sysupgrade-бэкап конфигов (НЕ прошивка!) — путь выводится последней строкой,
+# сервер сам стягивает файл после этого через ssh-cat (см. server.py _backup).
+R_BACKUP='
+f="/tmp/rctl-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+echo ":: sysupgrade -b (бэкап конфигов, прошивку НЕ трогает) -> $f"
+if sysupgrade -b "$f" >/tmp/sysupgrade-b.log 2>&1; then
+  echo "✓ бэкап создан"
+  echo "$f"
+else
+  echo "✗ sysupgrade -b не прошёл:"; tail -5 /tmp/sysupgrade-b.log
+  exit 1
+fi
+'
+
 # machine-readable мета для автозаголовка (модель/хост/подсеть подключённого роутера)
 R_META='
 m=$(cat /tmp/sysinfo/model 2>/dev/null || echo OpenWrt)
@@ -234,6 +287,16 @@ case "$cmd" in
     esac ;;
   geoblock)
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
+  telegram-cidr)
+    case "${1:-count}" in update) remote "$R_TGCIDR_UPDATE" ;; count) remote "$R_TGCIDR_COUNT" ;; *) echo "telegram-cidr update|count"; exit 1;; esac ;;
+  backup)   remote "$R_BACKUP" ;;
+  fetch-backup)
+    p="${1:-}"
+    case "$p" in
+      /tmp/rctl-backup-*.tar.gz|/tmp/netkit-backup-*.tar.gz) : ;;
+      *) echo "путь не похож на бэкап, отказ: $p" 1>&2; exit 1 ;;
+    esac
+    $SSH "cat '$p'" ;;
   info)     remote "$R_INFO" ;;
   meta)     remote "$R_META" ;;
   getconfig) $SSH "cat $SBOX" ;;                       # выдать текущий sing-box config.json
@@ -315,6 +378,8 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl nodes list|test|use ИМЯ|auto      живые ноды через clash API :9090
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
+  rctl telegram-cidr update|count        офиц. CIDR Telegram (core.telegram.org), доп.файл, база не трогается
+  rctl backup                 sysupgrade-бэкап конфигов (НЕ прошивка), путь во вывод — тянуть через панель/scp
   rctl info                  система: модель, прошивка, аптайм, WAN, версии
   rctl meta                  модель/хост/подсеть (для заголовка панели)
   rctl rotate UUID [СТАРЫЙ]  ротация подписки: сменить uuid в нодах (старый — если подписок несколько)

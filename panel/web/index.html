@@ -337,6 +337,17 @@
       </div>
 
       <div class="card">
+        <h2>Telegram CIDR + бэкап перед прошивкой</h2>
+        <p class="hint" style="margin-top:-6px">MTProto ходит по IP, не по домену — список диапазонов Telegram может устареть. Бэкап — конфиги роутера на всякий случай перед обновлением прошивки (саму прошивку не трогает).</p>
+        <div class="grid2">
+          <button class="btn sm" data-run="telegram-cidr-count">Telegram CIDR: счёт</button>
+          <button class="btn sm" data-run="telegram-cidr-update" title="только добавляет новые диапазоны отдельным файлом — существующую настройку не трогает">Обновить список</button>
+        </div>
+        <button class="btn primary wide" id="btnBackup" style="margin-top:8px" title="sysupgrade -b: тянет конфиги в архив и сохраняет рядом с панелью в backups/">💾 Сделать бэкап (перед прошивкой)</button>
+        <p class="hint">Сохранится в <code>panel/backups/</code> рядом с панелью на Деке — держи под рукой перед любым обновлением OpenWrt.</p>
+      </div>
+
+      <div class="card">
         <h2>Инфо и логи</h2>
         <p class="hint" style="margin-top:-6px">Модель, прошивка, аптайм роутера + сырые логи служб.</p>
         <div class="grid2">
@@ -588,6 +599,9 @@ $("#btnRotGo").addEventListener("click",()=>{
   close("#mRotate");
   postStream("Ротация подписки (uuid)","/api/rotate",{text});
 });
+
+// бэкап конфигов перед прошивкой (sysupgrade -b, стягивается в panel/backups/)
+$("#btnBackup").addEventListener("click",()=>postStream("Бэкап роутера","/api/backup",{}));
 
 async function loadConfig(){try{const c=await(await fetch("/api/config",{headers:{"X-Token":TOKEN}})).json();
   $("#hdrIp").textContent=c.ROUTER_IP||"—";$("#cfgIp").value=c.ROUTER_IP||"";$("#cfgUser").value=c.ROUTER_SSH_USER||"";

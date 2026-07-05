@@ -26,6 +26,9 @@ CFG=/etc/netkit
 : "${GEOBLOCK_URL:=https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Categories/geoblock.lst}"
 # сторож нод (авто-восстановление прокси)
 : "${WATCHDOG_ENABLE:=1}"; : "${WATCHDOG_CRON:=*/3 * * * *}"
+# авто-обновление CIDR Telegram (MTProto ходит по IP, список протухает)
+: "${TELEGRAM_CIDR_AUTOUPDATE:=1}"; : "${TELEGRAM_CIDR_CRON:=30 4 * * 0}"
+: "${TELEGRAM_CIDR_URL:=https://core.telegram.org/resources/cidr.txt}"
 SBOX=/etc/sing-box/config.json
 NFT=/etc/nftables.d/20-proxy.nft
 DNSD=/etc/dnsmasq.d/netkit.conf
@@ -363,6 +366,61 @@ EOF
   cron_line "/usr/sbin/proxy-watchdog" "$WATCHDOG_CRON" "$WATCHDOG_ENABLE"
 }
 
+# ---------- telegram-cidr: авто-обновление офиц. CIDR Telegram ----------
+deploy_telegram_cidr() {
+  cat > /usr/sbin/telegram-cidr-update <<EOF
+#!/bin/sh
+# генерируется netkit. Тянет офиц. CIDR Telegram (MTProto ходит по IP, не по домену)
+# и перекатывает наборы proxy4/proxy6 + redirect-цепочку.
+set -eu
+URL="$TELEGRAM_CIDR_URL"
+OUT="$CFG/telegram-cidr.list"
+NFTF="$NFT"
+LANIF="$LAN_IFACE"
+RPORT="$REDIRECT_PORT"
+TMP=/tmp/tg-cidr.txt
+log() { logger -t telegram-cidr "\$*"; echo "\$*"; }
+curl -fsSL -m 30 "\$URL" -o "\$TMP" 2>/dev/null || { log "download FAILED, оставляю старый список"; exit 1; }
+v4n=\$(grep -cE '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\$' "\$TMP" || echo 0)
+[ "\$v4n" -ge 5 ] || { log "список подозрительно мал (v4=\$v4n), откат"; exit 1; }
+tmpc=\$(mktemp)
+{
+  echo "# telegram-cidr.list — авто-обновлено \$(date +%F) с \$URL"
+  grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\$' "\$TMP"
+  grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}\$' "\$TMP"
+} > "\$tmpc"
+[ -f "\$OUT" ] && cp "\$OUT" "\$OUT.bak"
+mv "\$tmpc" "\$OUT"
+tmpn=\$(mktemp)
+{
+  echo "# генерируется netkit — правь config/telegram-cidr.list, не тут"
+  echo "set proxy4 { type ipv4_addr; flags interval; auto-merge;"
+  v4=\$(grep -v '^#' "\$OUT" | grep -F . | grep -v : | paste -sd, -)
+  [ -n "\$v4" ] && echo "  elements = { \$v4 };"
+  echo "}"
+  echo "set proxy6 { type ipv6_addr; flags interval; auto-merge;"
+  v6=\$(grep -v '^#' "\$OUT" | grep -F : | paste -sd, -)
+  [ -n "\$v6" ] && echo "  elements = { \$v6 };"
+  echo "}"
+  echo "chain proxy_redirect {"
+  echo "  type nat hook prerouting priority -1; policy accept;"
+  echo "  iifname \\"\$LANIF\\" ip  daddr @proxy4 tcp dport {80,443} redirect to :\$RPORT"
+  echo "  iifname \\"\$LANIF\\" ip6 daddr @proxy6 tcp dport {80,443} redirect to :\$RPORT"
+  echo "}"
+} > "\$tmpn"
+mv "\$tmpn" "\$NFTF"
+if fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1; then
+  log "Telegram CIDR обновлён: v4=\$v4n записей"
+else
+  log "firewall reload не прошёл — откат"; [ -f "\$OUT.bak" ] && mv "\$OUT.bak" "\$OUT" || true
+  fw4 reload >/dev/null 2>&1 || true
+  exit 1
+fi
+EOF
+  chmod +x /usr/sbin/telegram-cidr-update
+  cron_line "/usr/sbin/telegram-cidr-update" "$TELEGRAM_CIDR_CRON" "$TELEGRAM_CIDR_AUTOUPDATE"
+}
+
 # добавить/убрать строку крона (идемпотентно)
 cron_line() {  # $1=команда $2=расписание $3=вкл(1/0)
   cr=/etc/crontabs/root; mkdir -p /etc/crontabs; touch "$cr"
@@ -374,6 +432,7 @@ cron_line() {  # $1=команда $2=расписание $3=вкл(1/0)
 deploy_scripts() {
   deploy_geoblock; ok "geoblock-update развёрнут (крон: ${GEOBLOCK_CRON})"
   [ "$PROXY_ENABLE" = 1 ] && { deploy_watchdog; ok "proxy-watchdog развёрнут (крон: ${WATCHDOG_CRON})"; }
+  [ "$PROXY_ENABLE" = 1 ] && { deploy_telegram_cidr; ok "telegram-cidr-update развёрнут (крон: ${TELEGRAM_CIDR_CRON}, вкл=${TELEGRAM_CIDR_AUTOUPDATE})"; }
 }
 
 # =================== КОМАНДЫ ===================
@@ -467,6 +526,24 @@ cmd_nodes() {
       ;;
     *) err "nodes: list | test | use <N>";;
   esac
+}
+
+cmd_telegram_cidr() {
+  case "${1:-}" in
+    update|"") /usr/sbin/telegram-cidr-update 2>/dev/null || { deploy_telegram_cidr; /usr/sbin/telegram-cidr-update; };;
+    on)  TELEGRAM_CIDR_AUTOUPDATE=1; deploy_telegram_cidr; /usr/sbin/telegram-cidr-update;;
+    off) cron_line "/usr/sbin/telegram-cidr-update" "$TELEGRAM_CIDR_CRON" 0; ok "автообновление выключено (текущий список в telegram-cidr.list остаётся)";;
+    count) echo "  telegram CIDR: $(lines "$CFG/telegram-cidr.list" | grep -c .) записей";;
+    *) err "telegram-cidr: update | on | off | count";;
+  esac
+}
+
+cmd_backup() {
+  f="/tmp/netkit-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+  say "sysupgrade-бэкап конфигов (НЕ прошивка) → $f"
+  sysupgrade -b "$f" || { err "sysupgrade -b не прошёл"; return 1; }
+  ok "готово, стяни на комп: netctl backup"
+  echo "$f"
 }
 
 cmd_zapret() {
@@ -604,6 +681,11 @@ cmd_doctor() {
   say "geoblock-список: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0) доменов, крон/сторож:"
   grep -q geoblock-update /etc/crontabs/root 2>/dev/null && ok "geoblock-update в кроне" || warn "geoblock-update не в кроне"
   { [ "$PROXY_ENABLE" != 1 ] || grep -q proxy-watchdog /etc/crontabs/root 2>/dev/null; } && ok "сторож нод в кроне" || warn "proxy-watchdog не в кроне"
+  echo
+  say "telegram-cidr: $(lines "$CFG/telegram-cidr.list" | grep -c .) записей"
+  if [ "$TELEGRAM_CIDR_AUTOUPDATE" = 1 ]; then
+    grep -q telegram-cidr-update /etc/crontabs/root 2>/dev/null && ok "telegram-cidr-update в кроне" || warn "telegram-cidr-update не в кроне (netkit apply починит)"
+  else warn "автообновление telegram-cidr выключено в kit.conf"; fi
 }
 
 cmd_logs() {
@@ -623,10 +705,12 @@ case "${1:-}" in
   zapret)  shift; cmd_zapret "$@";;
   proxy)   shift; cmd_proxy "$@";;
   geoblock) shift; cmd_geoblock "$@";;
+  telegram-cidr) shift; cmd_telegram_cidr "$@";;
+  backup)  cmd_backup;;
   status)  cmd_status;;
   doctor)  shift; cmd_doctor "$@";;
   info)    cmd_info;;
   meta)    cmd_meta;;
   logs)    shift; cmd_logs "$@";;
-  *) echo "netkit: install|apply|status|doctor|info|meta|domains|nodes|zapret|proxy|geoblock|logs"; exit 1;;
+  *) echo "netkit: install|apply|status|doctor|info|meta|domains|nodes|zapret|proxy|geoblock|telegram-cidr|backup|logs"; exit 1;;
 esac

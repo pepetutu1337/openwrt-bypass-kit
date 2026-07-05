@@ -5,15 +5,17 @@
 #  дёргает ../rctl (SSH к роутеру), стримит вывод в браузер (SSE).
 #  Слушает только 127.0.0.1 под секретным токеном.
 # ============================================================
-import argparse, json, os, re, secrets, subprocess, tempfile, threading, webbrowser
+import argparse, json, os, re, secrets, subprocess, tempfile, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, urlsplit, unquote
 
 PANEL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(PANEL_DIR, "web")
 CONF = os.path.join(PANEL_DIR, "panel.conf")
+BACKUPS_DIR = os.path.join(PANEL_DIR, "backups")
 RCTL = ["sh", os.path.join(PANEL_DIR, "rctl")]
 TOKEN = secrets.token_urlsafe(16)
+BACKUP_PATH_RE = re.compile(r"^/tmp/(rctl|netkit)-backup-[0-9-]+\.tar\.gz$")
 
 STATIC = {
     "status":          ["status"],
@@ -25,6 +27,8 @@ STATIC = {
     "geoblock-update": ["geoblock", "update"],
     "geoblock-count":  ["geoblock", "count"],
     "geoblock-list":   ["geoblock", "list"],
+    "telegram-cidr-update": ["telegram-cidr", "update"],
+    "telegram-cidr-count":  ["telegram-cidr", "count"],
     "info":            ["info"],
     "watchdog":        ["watchdog"],
     "quic-on":         ["quic", "on"],
@@ -416,6 +420,44 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         self._sse(worker)
 
+    def _backup(self):
+        """sysupgrade -b на роутере (НЕ прошивка — только конфиги), потом стягиваем
+        файл через rctl fetch-backup (валидирует путь строго под /tmp/*-backup-*.tar.gz)."""
+        def worker(emit):
+            L = lambda s: emit("line", s)
+            lines = []
+
+            def on_line(s):
+                lines.append(s)
+                L(s)
+            rc = stream_command(["backup"], on_line)
+            if rc != 0:
+                L("✗ бэкап на роутере не создался"); return rc
+            remote_path = next((ln.strip() for ln in reversed(lines)
+                                 if BACKUP_PATH_RE.match(ln.strip())), None)
+            if not remote_path:
+                L("✗ не нашёл путь к бэкапу в выводе rctl"); return 1
+            os.makedirs(BACKUPS_DIR, exist_ok=True)
+            local_path = os.path.join(BACKUPS_DIR, f"router-backup-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz")
+            L(f":: стягиваю {remote_path} -> backups/{os.path.basename(local_path)}")
+            try:
+                with open(local_path, "wb") as f:
+                    p = subprocess.run(RCTL + ["fetch-backup", remote_path], cwd=PANEL_DIR,
+                                        stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=60)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                L(f"✗ не удалось стянуть файл: {e}"); return 1
+            if p.returncode != 0 or os.path.getsize(local_path) == 0:
+                L(f"✗ стянуть не удалось: {p.stderr.decode('utf-8', 'replace')}")
+                try:
+                    os.unlink(local_path)
+                except OSError:
+                    pass
+                return 1
+            L(f"✓ бэкап сохранён локально: backups/{os.path.basename(local_path)} ({os.path.getsize(local_path)} байт)")
+            L("  держи перед прошивкой — sysupgrade -b тянет только конфиги, не сами пакеты")
+            return 0
+        self._sse(worker)
+
     def do_GET(self):
         u = urlparse(self.path); qs = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
@@ -469,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             if not NAME_RE.match(tag):
                 return self._send(400, "нужно имя ноды (латиница/цифры)")
             return self._delnode(tag)
+        if u.path == "/api/backup":
+            return self._backup()
         return self._json(404, {"error": "not found"})
 
 
