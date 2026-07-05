@@ -9,7 +9,7 @@
     --bg:#0b0a08; --bg2:#0f0d0a; --panel:#161310; --panel2:#1e1a15; --line:#2e2822; --line-soft:#221e19;
     --txt:#f4efe6; --muted:#9a8f80;
     --accent:#e8733f; --accent-2:#f6a35c; --accent-d:#c2551f; --accent-glow:rgba(232,115,63,.35);
-    --ok:#43b56b; --bad:#e5484d; --warn:#e0a838; --con:#080706; --r:14px;
+    --ok:#39d97a; --bad:#f0525a; --warn:#f0b93e; --con:#080706; --r:14px;
     --shadow:0 8px 28px -8px rgba(0,0,0,.55);
   }
   *{box-sizing:border-box}
@@ -165,27 +165,42 @@
   @keyframes flow{to{stroke-dashoffset:-24}}
 
   /* --- node latency bars (replaces raw console wall for the ping list) --- */
-  .nodes-viz{display:flex; flex-direction:column; gap:3px; margin:10px 0 2px}
-  .node-row{display:grid; grid-template-columns:52px 1fr 58px; align-items:center; gap:10px; font-size:12.5px;
-    padding:5px 8px; margin:0 -8px; border-radius:8px; cursor:pointer; transition:background .12s ease}
+  .nodes-summary{display:flex; align-items:center; gap:14px; padding:9px 12px; margin:10px 0 8px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px; font-size:12.5px}
+  .nodes-summary b{color:var(--txt); font-weight:700; font-variant-numeric:tabular-nums}
+  .nodes-summary .ns-muted{color:var(--muted)}
+  .nodes-summary .ns-active{margin-left:auto; color:var(--accent-2); font-weight:700; display:flex; align-items:center; gap:5px}
+  .nodes-filter{display:flex; gap:6px; margin:0 0 8px}
+  .fchip{padding:5px 13px; border-radius:999px; border:1px solid var(--line); background:transparent;
+    color:var(--muted); font-size:11.5px; font-weight:700; cursor:pointer; transition:border-color .15s, color .15s, background .15s}
+  .fchip:hover{color:var(--txt); border-color:var(--line-soft)}
+  .fchip.active{background:linear-gradient(135deg,var(--accent-d),var(--accent)); border-color:transparent; color:#1a0c04}
+  .nodes-viz{display:flex; flex-direction:column; gap:2px; margin:0 0 2px}
+  .node-row{display:grid; grid-template-columns:22px 48px 1fr 58px; align-items:center; gap:10px; font-size:12.5px;
+    padding:6px 8px; margin:0 -8px; border-radius:9px; cursor:pointer; transition:background .12s ease, opacity .15s ease}
   .node-row:hover{background:var(--panel2)}
   .node-row:active{background:var(--line-soft)}
+  .node-row[data-tier="t-down"]{opacity:.5}
+  .node-row .flag{font-size:14px; text-align:center; filter:saturate(.9)}
   .node-row .nm{font-weight:700; color:var(--txt)}
+  .node-row.is-active{background:rgba(232,115,63,.08)}
   .node-row.is-active .nm{color:var(--accent-2)}
   .node-row .nm::before{content:"";display:none}
   .node-row.is-active .nm::before{content:"▶ ";color:var(--accent)}
-  .node-track{height:8px; border-radius:5px; background:var(--panel2); border:1px solid var(--line); overflow:hidden}
-  .node-fill{height:100%; border-radius:5px; transition:width .5s cubic-bezier(.2,.8,.2,1); box-shadow:inset 0 1px 0 rgba(255,255,255,.28)}
-  .node-fill.t-ok{background:var(--ok)}
-  .node-fill.t-mid{background:var(--warn)}
-  .node-fill.t-slow{background:var(--bad)}
+  .node-track{display:block; height:9px; border-radius:5px; background:var(--panel2); border:1px solid var(--line); overflow:hidden; position:relative}
+  .node-fill{display:block; height:100%; border-radius:5px; transition:width .5s cubic-bezier(.2,.8,.2,1); box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
+  .node-fill.t-ok{background:linear-gradient(90deg,#1f9c56,var(--ok)); box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 0 9px -1px rgba(57,217,122,.65)}
+  .node-fill.t-mid{background:linear-gradient(90deg,#c98f1f,var(--warn)); box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 0 9px -1px rgba(240,185,62,.6)}
+  .node-fill.t-slow{background:linear-gradient(90deg,#b93a41,var(--bad)); box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 0 9px -1px rgba(240,82,90,.6)}
   .node-fill.t-down{background:var(--line)}
   .node-row .ms{text-align:right; color:var(--muted); font-variant-numeric:tabular-nums}
   .node-row.is-active .ms{color:var(--txt); font-weight:700}
   .nodes-hint{font-size:11px; color:var(--muted); margin:0 0 4px}
-  .nodes-legend{display:flex; gap:14px; font-size:11px; color:var(--muted); margin-top:2px}
+  .nodes-legend{display:flex; gap:14px; font-size:11px; color:var(--muted); margin-top:8px}
   .nodes-legend span{display:flex; align-items:center; gap:5px}
   .nodes-legend i{width:8px;height:8px;border-radius:50%; display:inline-block}
+  .nodes-viz[data-filter="fast"] .node-row:not([data-tier="t-ok"]){display:none}
+  .nodes-viz[data-filter="issues"] .node-row[data-tier="t-ok"]{display:none}
 </style>
 </head>
 <body>
@@ -243,6 +258,12 @@
         <p class="hint" style="margin-top:-6px">Твой пул VPN-нод. ▶ — какая держит трафик сейчас.</p>
         <button class="btn primary wide" data-run="nodes"><span class="ic">📶</span> Все серверы + пинг</button>
         <p class="nodes-hint" id="nodesHint" hidden>Тапни по серверу, чтобы закрепить его — как в Happ.</p>
+        <div class="nodes-summary" id="nodesSummary" hidden></div>
+        <div class="nodes-filter" id="nodesFilter" hidden>
+          <button class="fchip active" data-f="all">Все</button>
+          <button class="fchip" data-f="fast">Быстрые</button>
+          <button class="fchip" data-f="issues">Проблемные</button>
+        </div>
         <div class="nodes-viz" id="nodesViz" hidden></div>
         <div class="row" style="margin-top:9px">
           <input type="text" id="nodeUse" placeholder="имя ноды: pl, de1, ee…" style="flex:1">
@@ -431,6 +452,16 @@ async function runStream(title,{action,args,method="GET",onDone}){
 }
 
 // рендер пинга нод барами вместо текстовой портянки (парсит вывод "rctl nodes list")
+const FLAGS={pl:"🇵🇱",lv:"🇱🇻",de:"🇩🇪",ee:"🇪🇪",al:"🇦🇱",cz:"🇨🇿",fr:"🇫🇷",nl:"🇳🇱",fi:"🇫🇮",us:"🇺🇸",in:"🇮🇳",jp:"🇯🇵",kz:"🇰🇿",tr:"🇹🇷",se:"🇸🇪"};
+function flagFor(name){return FLAGS[name.replace(/\d+$/,"").toLowerCase()]||"🌐"}
+// лог-шкала: реальные пинги кучкуются в 150-450мс, линейная ширина против самого
+// медленного узла (1000+мс) сжимает эту кучу в неотличимые 80-90% — отсюда "все серые".
+function qualityWidth(ms){
+  if(ms==null)return 4;
+  const MIN=60,MAX=700, c=Math.min(Math.max(ms,MIN),MAX);
+  const t=Math.log(c/MIN)/Math.log(MAX/MIN);
+  return Math.round(8+(1-t)*88);
+}
 function renderNodesViz(text){
   const box=$("#nodesViz"); if(!box)return;
   const rows=[];
@@ -440,15 +471,20 @@ function renderNodesViz(text){
     const [,act,name,ms,q]=m;
     rows.push({name,ms:ms==="-"?null:+ms,q:q.trim(),active:!!act});
   });
-  if(!rows.length){box.hidden=true;box.innerHTML="";$("#nodesHint").hidden=true;return}
+  if(!rows.length){box.hidden=true;box.innerHTML="";$("#nodesHint").hidden=true;$("#nodesSummary").hidden=true;$("#nodesFilter").hidden=true;return}
   rows.sort((a,b)=>(a.ms??1e9)-(b.ms??1e9));
-  const maxMs=Math.max(800,...rows.map(r=>r.ms||0));
+  const alive=rows.filter(r=>r.ms!=null).length, down=rows.length-alive;
+  const active=rows.find(r=>r.active);
+  $("#nodesSummary").innerHTML=`<span><b>${alive}</b> <span class="ns-muted">живых</span></span>`+
+    `<span class="ns-muted">${down} молчат</span>`+
+    (active?`<span class="ns-active">▶ ${flagFor(active.name)} ${active.name}</span>`:"");
+  $("#nodesSummary").hidden=false; $("#nodesFilter").hidden=false;
   box.innerHTML=rows.map(r=>{
     const tier=r.ms==null?"t-down":r.ms<=250?"t-ok":r.ms<=450?"t-mid":"t-slow";
-    const w=r.ms==null?4:Math.max(6,100-Math.round(r.ms/maxMs*90));
-    return `<div class="node-row${r.active?" is-active":""}" data-name="${r.name}">`+
+    return `<div class="node-row${r.active?" is-active":""}" data-name="${r.name}" data-tier="${tier}">`+
+      `<span class="flag">${flagFor(r.name)}</span>`+
       `<span class="nm">${r.name}</span>`+
-      `<span class="node-track"><span class="node-fill ${tier}" style="width:${w}%"></span></span>`+
+      `<span class="node-track"><span class="node-fill ${tier}" style="width:${qualityWidth(r.ms)}%"></span></span>`+
       `<span class="ms">${r.ms==null?"—":r.ms+" мс"}</span></div>`;
   }).join("")+
     `<div class="nodes-legend"><span><i style="background:var(--ok)"></i>быстро</span>`+
@@ -458,7 +494,7 @@ function renderNodesViz(text){
   box.hidden=false; $("#nodesHint").hidden=false;
 }
 
-// тап по ноде в списке = закрепить (как выбор сервера в Happ)
+// тап по ноде в списке = закрепить (как выбор сервера в Happ); чипы сверху = фильтр по tier
 $("#nodesViz").addEventListener("click",e=>{
   const row=e.target.closest(".node-row"); if(!row)return;
   const name=row.dataset.name; if(!name||row.classList.contains("is-active"))return;
@@ -466,9 +502,16 @@ $("#nodesViz").addEventListener("click",e=>{
   row.classList.add("is-active");
   runStream("Закрепляю ноду "+name,{action:"nodes-use",args:[name],method:"POST"});
 });
+$("#nodesFilter").addEventListener("click",e=>{
+  const b=e.target.closest(".fchip"); if(!b)return;
+  $$("#nodesFilter .fchip").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  $("#nodesViz").dataset.filter=b.dataset.f;
+});
 
 $$("[data-run]").forEach(b=>b.addEventListener("click",()=>{
-  if(b.dataset.run!=="nodes"){const v=$("#nodesViz");if(v)v.hidden=true;const h=$("#nodesHint");if(h)h.hidden=true}
+  if(b.dataset.run!=="nodes"){const v=$("#nodesViz");if(v)v.hidden=true;const h=$("#nodesHint");if(h)h.hidden=true;
+    const s=$("#nodesSummary");if(s)s.hidden=true;const f=$("#nodesFilter");if(f)f.hidden=true}
   runStream(b.textContent.trim(),{action:b.dataset.run,onDone:b.dataset.run==="nodes"?renderNodesViz:undefined});
 }));
 
