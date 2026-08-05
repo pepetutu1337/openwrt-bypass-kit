@@ -320,22 +320,47 @@ restart_proxy() {
 
 # ---------- geoblock: авто-список ушедших из РФ сервисов ----------
 deploy_geoblock() {
+  # Гугл раздаёт своим сервисам адреса из общих /24. Если в proxy-набор попадёт
+  # news.google.com, туда же по совпадению IP уедет ютуб — и гугл встретит
+  # клиента бот-проверкой с датацентрового адреса ноды. Поэтому гугловые домены
+  # из списка вычищаем: ютуб и так ходит напрямую через zapret.
+  [ -f /etc/geoblock-exclude.txt ] || cat > /etc/geoblock-exclude.txt <<'EOF'
+# Домены, которые НЕ пускаем в proxy4/proxy6 (расширенные регулярки, # — комментарий).
+\.google\.com$
+\.googleapis\.com$
+\.gstatic\.com$
+\.googleusercontent\.com$
+\.googlevideo\.com$
+\.ytimg\.com$
+\.ggpht\.com$
+^youtube\.
+\.youtube\.com$
+EOF
   cat > /usr/sbin/geoblock-update <<EOF
 #!/bin/sh
 # генерируется netkit. Тянет список ушедших-из-РФ сервисов в наборы proxy4/6.
 set -eu
 URL="$GEOBLOCK_URL"
 OUT="$GEOBLOCKD"
+EXCL=/etc/geoblock-exclude.txt
 TMP=/tmp/geoblock.lst
 log() { logger -t geoblock "\$*"; echo "\$*"; }
 curl -fsSL -m 40 "\$URL" -o "\$TMP" 2>/dev/null || { log "download FAILED, оставляю старый список"; exit 1; }
-n=\$(grep -cE '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" || echo 0)
+tmpd=\$(mktemp); tmpe=\$(mktemp)
+trap 'rm -f "\$tmpd" "\$tmpe"' EXIT
+grep -vE '^[[:space:]]*(#|\$)' "\$EXCL" 2>/dev/null > "\$tmpe" || true
+if [ -s "\$tmpe" ]; then
+  grep -E '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" | grep -vEf "\$tmpe" | sort -u > "\$tmpd"
+else
+  grep -E '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" | sort -u > "\$tmpd"
+fi
+n=\$(wc -l < "\$tmpd")
 [ "\$n" -ge 100 ] || { log "список подозрительно мал (\$n), откат"; exit 1; }
 tmpc=\$(mktemp)
-grep -E '^[a-z0-9._-]+\.[a-z]{2,}\$' "\$TMP" | sort -u | while IFS= read -r d; do
+while IFS= read -r d; do
   printf 'nftset=/%s/4#inet#fw4#proxy4\n' "\$d"
   printf 'nftset=/%s/6#inet#fw4#proxy6\n' "\$d"
-done > "\$tmpc"
+done < "\$tmpd" > "\$tmpc"
 [ -f "\$OUT" ] && cp "\$OUT" "\$OUT.bak"
 mv "\$tmpc" "\$OUT"
 if /etc/init.d/dnsmasq restart 2>/dev/null && sleep 2 && pgrep -x dnsmasq >/dev/null; then

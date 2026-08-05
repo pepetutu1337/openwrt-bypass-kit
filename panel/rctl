@@ -10,19 +10,53 @@
 set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CONF="$DIR/panel.conf"
-[ -f "$CONF" ] || { echo "нет $CONF"; exit 1; }
-# shellcheck disable=SC1090
-. "$CONF"
 
-KEY_OPT=""; [ -n "${ROUTER_SSH_KEY:-}" ] && KEY_OPT="-i $ROUTER_SSH_KEY"
-SSH="ssh $KEY_OPT -p ${ROUTER_SSH_PORT:-22} -o ConnectTimeout=8 -o BatchMode=yes ${ROUTER_SSH_USER}@${ROUTER_IP}"
-SCP="scp $KEY_OPT -P ${ROUTER_SSH_PORT:-22} -q -o ConnectTimeout=8 -o BatchMode=yes"
-DEST="${ROUTER_SSH_USER}@${ROUTER_IP}"
+# Два режима работы:
+#   LOCAL=1 — rctl лежит на самом роутере, команды выполняются напрямую (панель
+#             на uhttpd, Telegram-бот). SSH не нужен и panel.conf не обязателен.
+#   LOCAL=0 — rctl на Деке, ходит на роутер по SSH.
+if [ "${RCTL_LOCAL:-}" = 1 ] || { [ -f /etc/openwrt_release ] && command -v uci >/dev/null 2>&1; }; then
+  LOCAL=1
+else
+  LOCAL=0
+fi
+
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+elif [ "$LOCAL" = 0 ]; then
+  echo "нет $CONF"; exit 1
+fi
+
+ROUTER_IP="${ROUTER_IP:-127.0.0.1}"
 SBOX=/etc/sing-box/config.json
 API="${CLASH_API:-127.0.0.1:9090}"
 
-# выполнить удалённый sh-скрипт (из stdin), позиционные args после --
-remote() { script="$1"; shift; printf '%s' "$script" | $SSH "sh -s -- $*"; }
+if [ "$LOCAL" = 1 ]; then
+  SSH=""
+else
+  KEY_OPT=""; [ -n "${ROUTER_SSH_KEY:-}" ] && KEY_OPT="-i $ROUTER_SSH_KEY"
+  # Мультиплексирование: одно живое соединение на минуту вместо рукопожатия
+  # с dropbear на каждую подкоманду. status+nodes+info подряд экономят секунды.
+  MUX="${TMPDIR:-/tmp}/rctl-mux-$(id -u)"
+  mkdir -p "$MUX" 2>/dev/null || true
+  chmod 700 "$MUX" 2>/dev/null || true
+  SSH="ssh $KEY_OPT -p ${ROUTER_SSH_PORT:-22} -o ConnectTimeout=8 -o BatchMode=yes -o ControlMaster=auto -o ControlPath=$MUX/%r@%h:%p -o ControlPersist=60s ${ROUTER_SSH_USER}@${ROUTER_IP}"
+fi
+
+# выполнить sh-скрипт (из stdin), позиционные args после --
+remote() {
+  script="$1"; shift
+  if [ "$LOCAL" = 1 ]; then
+    printf '%s' "$script" | sh -s -- "$@"
+  else
+    printf '%s' "$script" | $SSH "sh -s -- $*"
+  fi
+}
+
+# прочитать файл роутера в stdout / записать файл роутера из stdin
+rcat() { if [ "$LOCAL" = 1 ]; then cat "$1"; else $SSH "cat '$1'"; fi; }
+rput() { if [ "$LOCAL" = 1 ]; then cat > "$1"; else $SSH "cat > '$1'"; fi; }
 
 # ---- удалённые скрипты (busybox sh, БЕЗ jq — парсим grep/sed) ----------------
 
@@ -140,6 +174,31 @@ echo "закрепить: имя ноды в поле выше; вернуть �
 
 # алиас: то же самое (свежий пинг всех)
 R_NODE_TEST="$R_NODES"
+
+# выбрать живую ноду с лучшим пингом и закрепить селектор на ней
+R_NODES_BEST='
+API="'"$API"'"
+b="http://$API"
+sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+[ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
+echo ":: меряю все ноды…"
+d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
+best=""; bestms=0
+for n in $all; do
+  [ "$n" = "auto" ] && continue
+  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+  [ -n "$ms" ] || continue
+  if [ -z "$best" ] || [ "$ms" -lt "$bestms" ]; then best=$n; bestms=$ms; fi
+done
+[ -n "$best" ] || { echo "✗ ни одна нода не ответила — сеть роутера или подписка"; exit 1; }
+if [ "$sel" = "$best" ]; then
+  echo "✓ уже на лучшей: $best ($bestms ms)"
+  exit 0
+fi
+r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$b/proxies/proxy" -d "{\"name\":\"$best\"}")
+if [ "$r" = "204" ]; then echo "✓ переключил: $sel -> $best ($bestms ms)"; else echo "✗ не переключилось (код $r)"; exit 1; fi
+'
 
 R_NODE_USE='
 API="'"$API"'"
@@ -297,6 +356,123 @@ echo "домены:   прокси $(uci -q get dhcp.@ipset[0].domain | wc -w) +
 echo "zapret:   $(pidof nfqws 2>/dev/null | wc -w) nfqws-процессов"
 '
 
+# Тест ютуба. Меряем то, что реально измеримо с роутера:
+# ссылка на видеопоток из watch-страницы подписана и без расшифровки n-параметра
+# отдаёт 403, поэтому скорость снимаем на самой странице (1+ МБ с youtube.com,
+# тот же DPI-путь), а до googlevideo проверяем связность и задержку.
+R_YTTEST='
+echo ":: тест ютуба"
+echo ""
+echo "=== куда идёт трафик ==="
+mine=0
+for d in www.youtube.com i.ytimg.com youtubei.googleapis.com; do
+  ips=$(nslookup "$d" 127.0.0.1 2>/dev/null | grep -A20 "Name:" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | grep -v "^127\." | head -4)
+  [ -n "$ips" ] || { echo "  ✗ $d не резолвится — смотри DoH/dnsmasq"; continue; }
+  bad=""
+  for ip in $ips; do
+    nft get element inet fw4 proxy4 "{ $ip }" >/dev/null 2>&1 && bad="$bad $ip"
+  done
+  if [ -n "$bad" ]; then
+    echo "  ✗ $d уехал в прокси:$bad"
+    echo "     гугл ответит бот-проверкой, видео не стартует. Лечится: geoblock google-чисткой"
+    mine=1
+  else
+    echo "  ✓ $d идёт напрямую (через zapret)"
+  fi
+done
+echo ""
+echo "=== обход ==="
+if pidof nfqws >/dev/null 2>&1; then echo "  ✓ zapret работает ($(pidof nfqws | wc -w) процессов)"; else echo "  ✗ zapret НЕ работает — вот и причина"; fi
+if grep -qi googlevideo /opt/zapret/ipset/zapret-hosts-user.txt 2>/dev/null; then echo "  ✓ googlevideo в списке zapret"; else echo "  ! googlevideo НЕ в списке zapret — десинк не применяется"; fi
+if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "  ✓ QUIC блокируется, браузер уходит на TCP"; else echo "  ! QUIC не блокируется — браузер может залипнуть на UDP/443"; fi
+echo ""
+echo "=== скорость (страница youtube.com, ~1 МБ, тот же DPI-путь что и видео) ==="
+w=/tmp/yttest.html
+st=$(curl -sS -m 30 "https://www.youtube.com/watch?v=aqz-KE-bpKQ" -o "$w" -w "%{http_code} %{size_download} %{speed_download} %{time_total}" 2>/dev/null) || st=""
+if [ -z "$st" ]; then
+  echo "  ✗ страница не открылась вообще — ютуб недоступен с роутера"
+else
+  set -- $st
+  code=$1; size=$2; sp=$3; tt=$4
+  kb=$((sp/1024))
+  echo "  код $code, $((size/1024)) КБ за ${tt}с = ${kb} КБ/с"
+  if [ "$code" = "200" ]; then
+    if [ "$kb" -lt 100 ]; then echo "  ✗ медленно — похоже на душилово"; elif [ "$kb" -lt 300 ]; then echo "  ! средне, на 1080p может не хватить"; else echo "  ✓ нормально"; fi
+  fi
+  grep -q streamingData "$w" 2>/dev/null && echo "  ✓ плеерные данные в странице есть (видео должно стартовать)" || echo "  ! в странице нет streamingData — ютуб отдал заглушку или бот-проверку"
+fi
+echo ""
+echo "=== googlevideo (сам видеопоток) ==="
+h=$(grep -o "https://rr[0-9a-z-]*\.googlevideo\.com" "$w" 2>/dev/null | head -1)
+[ -n "$h" ] || h="https://rr1---sn-4g5edndd.googlevideo.com"
+gt=$(curl -sS -m 15 "$h/generate_204" -o /dev/null -w "%{http_code} %{time_appconnect}" 2>/dev/null) || gt=""
+if [ -n "$gt" ]; then
+  set -- $gt
+  echo "  ✓ $h отвечает (код $1, TLS за ${2}с)"
+else
+  echo "  ✗ $h недоступен — видеопоток не пойдёт"
+fi
+rm -f "$w"
+echo ""
+[ "$mine" = 1 ] && echo "ИТОГ: ютуб уехал в прокси — это и ломает старт видео." || echo "ИТОГ: маршрутизация верная, ютуб идёт напрямую через zapret."
+'
+
+# «Починить» одной кнопкой — то, что должно помогать родителям без вникания.
+# Ничего не ломает: перезапускает только упавшее, ноду меняет только если она
+# мертва или совсем медленная. FIX_MAX_MS — порог «совсем медленная».
+R_FIX='
+API="'"$API"'"
+b="http://$API"
+MAX=${FIX_MAX_MS:-600}
+changed=0
+echo ":: чиню"
+echo ""
+for p in "sing-box:sing-box" "zapret:nfqws" "https-dns-proxy:https-dns-proxy" "dnsmasq:dnsmasq"; do
+  s=${p%%:*}; bin=${p##*:}
+  if pidof "$bin" >/dev/null 2>&1; then
+    echo "  ✓ $s работает"
+  else
+    echo "  ! $s лежал — поднимаю"
+    /etc/init.d/"$s" restart >/dev/null 2>&1
+    sleep 2
+    if pidof "$bin" >/dev/null 2>&1; then echo "    ✓ поднялся"; changed=1; else echo "    ✗ не поднялся, нужен человек"; fi
+  fi
+done
+echo ""
+sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+if [ -z "$sel" ]; then
+  echo "  ✗ прокси не отвечает даже после рестарта — дальше руками"
+else
+  active=$sel
+  [ "$sel" = "auto" ] && active=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+  ms=$(curl -s --max-time 8 "$b/proxies/$active/delay?url=http://www.gstatic.com/generate_204&timeout=3000" | sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p")
+  if [ -n "$ms" ] && [ "$ms" -le "$MAX" ]; then
+    echo "  ✓ сервер $active отвечает за ${ms} мс — менять не буду"
+  else
+    [ -n "$ms" ] && echo "  ! сервер $active тормозит (${ms} мс) — ищу лучше" || echo "  ! сервер $active не отвечает — ищу живой"
+    d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
+    all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+    best=""; bestms=0
+    for n in $all; do
+      [ "$n" = "auto" ] && continue
+      v=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+      [ -n "$v" ] || continue
+      if [ -z "$best" ] || [ "$v" -lt "$bestms" ]; then best=$n; bestms=$v; fi
+    done
+    if [ -n "$best" ]; then
+      r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$b/proxies/proxy" -d "{\"name\":\"$best\"}")
+      [ "$r" = "204" ] && { echo "    ✓ переключил на $best (${bestms} мс)"; changed=1; } || echo "    ✗ переключить не вышло (код $r)"
+    else
+      echo "    ✗ ни один сервер не ответил — похоже, проблема с интернетом целиком"
+    fi
+  fi
+fi
+echo ""
+if ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; then echo "  ✓ интернет у роутера есть"; else echo "  ✗ интернета у роутера нет — дело не в обходе, звони провайдеру"; fi
+echo ""
+[ "$changed" = 1 ] && echo "ГОТОВО: что-то починил, попробуй ещё раз." || echo "ГОТОВО: чинить было нечего, всё и так работало."
+'
+
 R_QUIC_ON='uci set firewall.block_quic.enabled="1"; uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1; echo "✓ QUIC-блок включён"'
 R_QUIC_OFF='uci set firewall.block_quic.enabled="0"; uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1; echo "✓ QUIC-блок выключен"'
 
@@ -321,8 +497,9 @@ case "$cmd" in
       list) remote "$R_NODES" ;;
       test) remote "$R_NODE_TEST" ;;
       auto) remote "$R_NODE_AUTO" ;;
+      best) remote "$R_NODES_BEST" ;;
       use)  shift; [ $# -ge 1 ] || { echo "rctl nodes use ИМЯ"; exit 1; }; remote "$R_NODE_USE" "$1" ;;
-      *) echo "nodes list|test|use ИМЯ|auto"; exit 1 ;;
+      *) echo "nodes list|test|best|use ИМЯ|auto"; exit 1 ;;
     esac ;;
   domains)
     case "${1:-list}" in
@@ -335,6 +512,8 @@ case "$cmd" in
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
   telegram-cidr)
     case "${1:-count}" in update) remote "$R_TGCIDR_UPDATE" ;; count) remote "$R_TGCIDR_COUNT" ;; *) echo "telegram-cidr update|count"; exit 1;; esac ;;
+  yttest)   remote "$R_YTTEST" ;;
+  fix)      remote "$R_FIX" ;;
   backup)   remote "$R_BACKUP" ;;
   fetch-backup)
     p="${1:-}"
@@ -342,14 +521,14 @@ case "$cmd" in
       /tmp/rctl-backup-*.tar.gz|/tmp/netkit-backup-*.tar.gz) : ;;
       *) echo "путь не похож на бэкап, отказ: $p" 1>&2; exit 1 ;;
     esac
-    $SSH "cat '$p'" ;;
+    rcat "$p" ;;
   info)     remote "$R_INFO" ;;
   meta)     remote "$R_META" ;;
-  getconfig) $SSH "cat $SBOX" ;;                       # выдать текущий sing-box config.json
+  getconfig) rcat "$SBOX" ;;                            # выдать текущий sing-box config.json
   putconfig)                                            # залить новый config (с бэкапом/проверкой/откатом)
     f="${1:-}"; [ -f "$f" ] || { echo "нет файла: $f"; exit 1; }
     # льём через ssh 'cat >' (не scp — на dropbear-роутере нет sftp-server)
-    $SSH "cat > /tmp/sb-new.json" < "$f" || { echo "✗ не удалось передать config на роутер"; exit 1; }
+    rput /tmp/sb-new.json < "$f" || { echo "✗ не удалось передать config на роутер"; exit 1; }
     remote '
       ts=$(date +%Y%m%d-%H%M%S)
       if sing-box check -c /tmp/sb-new.json 2>/tmp/sbchk.err; then
@@ -413,7 +592,8 @@ case "$cmd" in
       dns)      remote 'logread -e dnsmasq | tail -60' ;;
       *) echo "logs sing-box|zapret|dns"; exit 1 ;;
     esac ;;
-  ssh) exec $SSH ;;
+  ssh)
+    if [ "$LOCAL" = 1 ]; then exec sh; else exec $SSH; fi ;;
   help|*) cat <<EOF
 rctl — пульт к твоему живому роутеру ($ROUTER_IP).
 
@@ -421,7 +601,9 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl doctor [домен]        ПОЛНЫЙ чекап: сервисы→DNS→proxy4/6→нода→QUIC→split-RU→IPv6→домены→geoblock→telegram-cidr→WAN→краны
   rctl restart sing-box|zapret|dnsmasq|https-dns-proxy
   rctl toggle СЛУЖБА on|off  включить/выключить службу (без рестарта роутера)
-  rctl nodes list|test|use ИМЯ|auto      живые ноды через clash API :9090
+  rctl fix                   починить одной командой: поднять упавшее, сменить мёртвую/тормозящую ноду
+  rctl yttest                тест ютуба: не уехал ли в прокси, жив ли zapret, скорость, googlevideo
+  rctl nodes list|test|best|use ИМЯ|auto живые ноды через clash API :9090 (best = закрепить лучшую по пингу)
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
   rctl telegram-cidr update|count        офиц. CIDR Telegram (core.telegram.org), доп.файл, база не трогается

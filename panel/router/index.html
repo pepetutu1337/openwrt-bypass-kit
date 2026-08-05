@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Роутер</title>
+<style>
+  :root{
+    --bg:#12161d; --card:#1a2029; --card2:#212936; --line:#2c3542;
+    --tx:#e6edf5; --dim:#93a1b3; --acc:#66c0f4; --ok:#5ecf7f; --warn:#f0c04a; --bad:#f0625d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:16px;padding-bottom:48px;-webkit-text-size-adjust:100%}
+  .wrap{max-width:940px;margin:0 auto}
+  header{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;margin-bottom:20px}
+  h1{font-size:20px;margin:0;font-weight:650}
+  .sub{color:var(--dim);font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+  h2{font-size:15px;margin:0 0 14px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+
+  /* светофор */
+  .light{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+  .bulb{width:56px;height:56px;border-radius:50%;flex:none;background:#39424f;
+        box-shadow:0 0 0 6px rgba(255,255,255,.03);transition:background .3s,box-shadow .3s}
+  .bulb.ok{background:var(--ok);box-shadow:0 0 26px rgba(94,207,127,.45)}
+  .bulb.warn{background:var(--warn);box-shadow:0 0 26px rgba(240,192,74,.45)}
+  .bulb.bad{background:var(--bad);box-shadow:0 0 26px rgba(240,98,93,.45)}
+  .bulb.busy{animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .lighttx b{display:block;font-size:19px;font-weight:650}
+  .lighttx span{color:var(--dim);font-size:14px}
+
+  .bigrow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  button{font:inherit;color:var(--tx);background:var(--card2);border:1px solid var(--line);
+         border-radius:11px;padding:12px 16px;cursor:pointer;transition:.15s}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button:disabled{opacity:.45;cursor:default}
+  button.big{padding:20px 16px;font-size:18px;font-weight:650;border-radius:14px}
+  button.primary{background:var(--acc);color:#0d1117;border-color:var(--acc)}
+  button.primary:hover:not(:disabled){opacity:.88;color:#0d1117}
+  button.sm{padding:8px 12px;font-size:14px}
+  button.danger:hover:not(:disabled){border-color:var(--bad);color:var(--bad)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .chip{display:flex;align-items:center;gap:7px;background:var(--card2);border:1px solid var(--line);
+        border-radius:999px;padding:6px 13px;font-size:14px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#4a5666;flex:none}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+
+  .row{display:flex;flex-wrap:wrap;gap:9px}
+  input{font:inherit;color:var(--tx);background:#151b23;border:1px solid var(--line);
+        border-radius:10px;padding:10px 13px;min-width:0;flex:1}
+  input:focus{outline:none;border-color:var(--acc)}
+  details{margin-top:4px}
+  summary{cursor:pointer;color:var(--acc);padding:10px 0;font-size:15px;user-select:none}
+  summary::marker{color:var(--dim)}
+
+  pre{background:#0d1117;border:1px solid var(--line);border-radius:11px;padding:14px;
+      margin:0;overflow:auto;max-height:60vh;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+      white-space:pre-wrap;word-break:break-word}
+  pre:empty{display:none}
+  .l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--warn)}
+  .l-head{color:var(--acc);font-weight:600} .l-dim{color:var(--dim)}
+
+  #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(120%);
+         background:var(--card2);border:1px solid var(--line);border-radius:11px;
+         padding:12px 20px;box-shadow:0 10px 30px rgba(0,0,0,.5);transition:transform .25s;
+         max-width:92vw;z-index:9}
+  #toast.show{transform:translateX(-50%) translateY(0)}
+  #toast.ok{border-color:var(--ok)} #toast.bad{border-color:var(--bad)}
+
+  .nodes{display:grid;gap:7px;margin-top:12px}
+  .node{display:flex;align-items:center;gap:11px;background:var(--card2);border:1px solid var(--line);
+        border-radius:10px;padding:9px 13px;cursor:pointer}
+  .node:hover{border-color:var(--acc)}
+  .node.active{border-color:var(--acc);background:#1d2b38}
+  .node .nm{flex:1;font-weight:550}
+  .node .ms{color:var(--dim);font-size:14px;font-variant-numeric:tabular-nums}
+  .node.dead{opacity:.5}
+  .bar{height:4px;border-radius:2px;background:var(--ok);flex:none}
+
+  @media (max-width:560px){
+    body{padding:12px}
+    .bigrow{grid-template-columns:1fr}
+    button.big{padding:18px 14px}
+    h1{font-size:18px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1 id="title">Роутер</h1>
+    <span class="sub" id="subtitle">подключаюсь…</span>
+  </header>
+
+  <div class="card">
+    <div class="light">
+      <div class="bulb" id="bulb"></div>
+      <div class="lighttx">
+        <b id="verdict">Проверяю…</b>
+        <span id="verdictsub">смотрю, что с обходом</span>
+      </div>
+    </div>
+
+    <div class="bigrow">
+      <button class="big primary" data-act="fix">Починить</button>
+      <button class="big" data-act="yttest">Проверить ютуб</button>
+    </div>
+
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <details id="adv">
+    <summary>Подробности и ручные настройки</summary>
+
+    <div class="card">
+      <h2>Серверы обхода</h2>
+      <div class="row">
+        <button class="sm" data-act="nodes">Показать с пингом</button>
+        <button class="sm" data-act="best">Выбрать лучший</button>
+        <button class="sm" data-act="auto">Автовыбор</button>
+      </div>
+      <div class="nodes" id="nodelist"></div>
+    </div>
+
+    <div class="card">
+      <h2>Службы</h2>
+      <div class="row">
+        <button class="sm" data-act="restart" data-v="sing-box">Перезапустить прокси</button>
+        <button class="sm" data-act="restart" data-v="zapret">Перезапустить zapret</button>
+        <button class="sm" data-act="restart" data-v="dnsmasq">Перезапустить DNS</button>
+        <button class="sm" data-act="doctor">Полный чекап</button>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <button class="sm" data-act="quic" data-v="on">QUIC блок вкл</button>
+        <button class="sm" data-act="quic" data-v="off">QUIC блок выкл</button>
+        <button class="sm" data-act="watchdog">Прогнать сторож</button>
+        <button class="sm" data-act="info">Инфо о системе</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Домены через прокси</h2>
+      <div class="row">
+        <input id="dom" placeholder="example.com" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <button class="sm" data-act="domadd" data-src="dom">Добавить</button>
+        <button class="sm danger" data-act="domrm" data-src="dom">Убрать</button>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <button class="sm" data-act="domains">Список своих</button>
+        <button class="sm" data-act="geocount">Сколько в geoblock</button>
+        <button class="sm" data-act="geolist">Показать geoblock</button>
+        <button class="sm" data-act="geoupdate">Обновить geoblock</button>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <input id="find" placeholder="поиск по выводу ниже" autocapitalize="off">
+        <button class="sm" id="findbtn">Найти</button>
+        <button class="sm" id="findclr">Сброс</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Логи</h2>
+      <div class="row">
+        <button class="sm" data-act="logs" data-v="sing-box">Прокси</button>
+        <button class="sm" data-act="logs" data-v="zapret">Zapret</button>
+        <button class="sm" data-act="logs" data-v="dns">DNS</button>
+        <button class="sm" data-act="tgcount">Telegram CIDR</button>
+        <button class="sm" data-act="tgupdate">Обновить Telegram CIDR</button>
+      </div>
+    </div>
+  </details>
+
+  <pre id="out"></pre>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const out = $('#out'), bulb = $('#bulb');
+let busy = false, rawOut = '';
+
+function toast(msg, kind){
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show ' + (kind || '');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = '', 3200);
+}
+
+function paint(text){
+  rawOut = text;
+  render(text);
+}
+function render(text){
+  out.innerHTML = '';
+  const filter = $('#find').value.trim().toLowerCase();
+  text.split('\n').forEach(line => {
+    if (filter && !line.toLowerCase().includes(filter)) return;
+    const d = document.createElement('div');
+    d.textContent = line;
+    if (/^\s*[✓●]|running|ГОТОВО|ИТОГ/.test(line)) d.className = 'l-ok';
+    else if (/^\s*[✗×]|stopped|НЕ |не отвечает|не работает|ошибка/i.test(line)) d.className = 'l-bad';
+    else if (/^\s*!/.test(line)) d.className = 'l-warn';
+    else if (/^===|^::/.test(line)) d.className = 'l-head';
+    else if (/^\s*·/.test(line)) d.className = 'l-dim';
+    out.appendChild(d);
+  });
+}
+
+async function call(act, v){
+  if (busy) return null;
+  busy = true;
+  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  bulb.classList.add('busy');
+  try {
+    const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
+    const r = await fetch(u, {cache:'no-store'});
+    return await r.text();
+  } catch(e){
+    toast('Роутер не отвечает', 'bad');
+    return null;
+  } finally {
+    busy = false;
+    document.querySelectorAll('button').forEach(b => b.disabled = false);
+    bulb.classList.remove('busy');
+  }
+}
+
+/* ---- светофор из вывода status ---- */
+function readStatus(t){
+  const chips = $('#chips');
+  chips.innerHTML = '';
+  const svc = [['sing-box','Прокси'],['zapret','Zapret'],['DoH','DNS'],['dnsmasq','dnsmasq']];
+  let down = [];
+  svc.forEach(([key, label]) => {
+    const re = new RegExp('^' + key + '\\s+(●|✗)', 'm');
+    const m = t.match(re);
+    const ok = m && m[1] === '●';
+    if (m && !ok) down.push(label);
+    chips.insertAdjacentHTML('beforeend',
+      `<span class="chip"><i class="dot ${m ? (ok?'ok':'bad') : ''}"></i>${label}</span>`);
+  });
+  const node = (t.match(/активная нода:\s*(\S+)/) || [])[1];
+  if (node) chips.insertAdjacentHTML('beforeend', `<span class="chip"><i class="dot ok"></i>сервер: ${node}</span>`);
+  const dom = (t.match(/проксируемых доменов \(uci\):\s*(\d+)/) || [])[1];
+  const geo = (t.match(/geoblock:\s*(\d+)/) || [])[1];
+  if (dom) chips.insertAdjacentHTML('beforeend', `<span class="chip"><i class="dot ok"></i>доменов: ${dom}${geo ? ' + ' + geo : ''}</span>`);
+
+  if (down.length === 0 && node){
+    bulb.className = 'bulb ok';
+    $('#verdict').textContent = 'Всё работает';
+    $('#verdictsub').textContent = 'обход включён, сервер ' + node;
+  } else if (down.length && down.length < 4){
+    bulb.className = 'bulb warn';
+    $('#verdict').textContent = 'Часть служб лежит';
+    $('#verdictsub').textContent = 'не работает: ' + down.join(', ') + ' — жми «Починить»';
+  } else {
+    bulb.className = 'bulb bad';
+    $('#verdict').textContent = 'Обход не работает';
+    $('#verdictsub').textContent = 'жми «Починить»';
+  }
+}
+
+/* ---- ноды карточками ---- */
+function readNodes(t){
+  const box = $('#nodelist');
+  box.innerHTML = '';
+  const lines = t.split('\n');
+  const rows = [];
+  lines.forEach(l => {
+    const m = l.match(/^(=>|\s\s)\s*(\S+)\s+(\d+|-)\s*(ms)?\s*(.*)$/);
+    if (m) rows.push({active: m[1] === '=>', name: m[2], ms: m[3] === '-' ? null : +m[3]});
+  });
+  if (!rows.length) return;
+  const alive = rows.filter(r => r.ms).map(r => r.ms);
+  const worst = alive.length ? Math.max(...alive) : 1;
+  rows.sort((a,b) => (a.ms||99999) - (b.ms||99999));
+  rows.forEach(r => {
+    const el = document.createElement('div');
+    el.className = 'node' + (r.active ? ' active' : '') + (r.ms ? '' : ' dead');
+    const w = r.ms ? Math.max(8, Math.round(60 * r.ms / worst)) : 0;
+    el.innerHTML = `<span class="nm">${r.active ? '▸ ' : ''}${r.name}</span>` +
+      (r.ms ? `<i class="bar" style="width:${w}px"></i><span class="ms">${r.ms} мс</span>`
+            : `<span class="ms">молчит</span>`);
+    if (r.ms) el.onclick = () => run('use', r.name);
+    box.appendChild(el);
+  });
+}
+
+async function run(act, v){
+  const t = await call(act, v);
+  if (t === null) return;
+  paint(t);
+  if (act === 'nodes') readNodes(t);
+  if (act === 'fix'){
+    toast(/чинить было нечего/.test(t) ? 'Всё и так работало' : 'Починил, проверяй', 'ok');
+    refresh();
+  }
+  if (act === 'use' || act === 'best' || act === 'auto'){
+    toast(t.split('\n').find(l => l.trim()) || 'готово', /✗/.test(t) ? 'bad' : 'ok');
+    refresh();
+  }
+  if (act === 'yttest'){
+    const bad = /ИТОГ: ютуб уехал/.test(t);
+    toast(bad ? 'Ютуб уехал в прокси — жми «Починить»' : 'С роутера ютуб в порядке', bad ? 'bad' : 'ok');
+  }
+  if (act === 'restart' || act === 'quic' || act === 'geoupdate') refresh();
+}
+
+async function refresh(){
+  const t = await call('status');
+  if (t) readStatus(t);
+}
+
+document.querySelectorAll('button[data-act]').forEach(b => {
+  b.onclick = () => {
+    const src = b.dataset.src;
+    let v = b.dataset.v;
+    if (src){
+      v = $('#' + src).value.trim();
+      if (!v) return toast('Сначала впиши домен', 'bad');
+    }
+    run(b.dataset.act, v);
+  };
+});
+$('#findbtn').onclick = () => render(rawOut);
+$('#findclr').onclick = () => { $('#find').value = ''; render(rawOut); };
+$('#find').addEventListener('keydown', e => { if (e.key === 'Enter') render(rawOut); });
+
+(async function init(){
+  const m = await call('meta');
+  if (m){
+    const g = k => (m.match(new RegExp('^' + k + '=(.*)$', 'm')) || [,''])[1].trim();
+    if (g('model')) $('#title').textContent = g('model');
+    $('#subtitle').textContent = g('lan') || '';
+  }
+  refresh();
+  setInterval(() => { if (!busy && !document.hidden) refresh(); }, 20000);
+})();
+</script>
+</body>
+</html>

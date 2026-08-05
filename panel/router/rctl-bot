@@ -1,0 +1,124 @@
+#!/bin/sh
+# Telegram-бот к роутеру. Живёт на самом роутере, только исходящие соединения —
+# ни портов наружу, ни пробросов. Ходит в API через локальный SOCKS sing-box,
+# потому что api.telegram.org с роутера напрямую не открывается.
+#
+# Настройки: /etc/rctl-bot.conf
+#   BOT_TOKEN=123456:AA...      токен от @BotFather
+#   BOT_ALLOW="11111 22222"     chat_id, кому можно (через пробел)
+#   BOT_PROXY=127.0.0.1:1180    локальный SOCKS sing-box
+#
+# Кто не в BOT_ALLOW — команд не выполняет. Если список пуст, бот просто
+# сообщает свой chat_id, чтобы было что вписать в конфиг.
+set -u
+
+CONF=/etc/rctl-bot.conf
+[ -f "$CONF" ] || { echo "нет $CONF"; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+RCTL=/usr/sbin/rctl
+export RCTL_LOCAL=1
+BOT_PROXY="${BOT_PROXY:-127.0.0.1:1180}"
+BOT_ALLOW="${BOT_ALLOW:-}"
+OFFSET_FILE=/tmp/rctl-bot.offset
+API="https://api.telegram.org/bot$BOT_TOKEN"
+KB='{"keyboard":[["Статус","Починить"],["Ютуб","Серверы"]],"resize_keyboard":true}'
+
+log() { logger -t rctl-bot "$*"; }
+
+tg() { # tg МЕТОД [curl-args…]
+  m=$1; shift
+  curl -s --max-time 70 --socks5-hostname "$BOT_PROXY" "$API/$m" "$@"
+}
+
+send() { # send CHAT ТЕКСТ
+  printf '%s' "$2" | head -c 3500 > /tmp/rctl-bot.msg
+  tg sendMessage -o /dev/null \
+    --data-urlencode "chat_id=$1" \
+    --data-urlencode "text@/tmp/rctl-bot.msg" \
+    --data-urlencode "reply_markup=$KB" \
+  || log "не отправилось в $1"
+  rm -f /tmp/rctl-bot.msg
+}
+
+allowed() {
+  [ -n "$BOT_ALLOW" ] || return 1
+  for c in $BOT_ALLOW; do [ "$c" = "$1" ] && return 0; done
+  return 1
+}
+
+HELP='Пульт к роутеру.
+
+Статус — что работает прямо сейчас
+Починить — поднять упавшее, сменить мёртвый сервер
+Ютуб — проверить, почему не идёт видео
+Серверы — список с пингом
+
+/use ИМЯ — закрепить сервер
+/best — закрепить самый быстрый
+/auto — автовыбор
+/logs — последние строки лога прокси'
+
+handle() { # handle CHAT ТЕКСТ
+  chat=$1; text=$2
+  case "$text" in
+    /start|/help|help|Помощь)      send "$chat" "$HELP" ;;
+    /status|Статус|статус)         send "$chat" "$($RCTL status 2>&1)" ;;
+    /fix|Починить|починить)        send "$chat" "$($RCTL fix 2>&1)" ;;
+    /yt|/yttest|Ютуб|ютуб)         send "$chat" "$($RCTL yttest 2>&1)" ;;
+    /nodes|Серверы|серверы)        send "$chat" "$($RCTL nodes list 2>&1)" ;;
+    /best|Лучший)                  send "$chat" "$($RCTL nodes best 2>&1)" ;;
+    /auto)                         send "$chat" "$($RCTL nodes auto 2>&1)" ;;
+    /logs)                         send "$chat" "$($RCTL logs sing-box 2>&1 | tail -25)" ;;
+    /use\ *)
+      n=${text#/use }
+      if echo "$n" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+        send "$chat" "$($RCTL nodes use "$n" 2>&1)"
+      else
+        send "$chat" "Кривое имя сервера."
+      fi ;;
+    *) send "$chat" "Не понял. Кнопки внизу или /help" ;;
+  esac
+}
+
+log "старт (proxy $BOT_PROXY)"
+offset=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
+
+# на первом запуске пропускаем всё, что накопилось, пока бот лежал
+if [ "$offset" = 0 ]; then
+  r=$(tg getUpdates --data-urlencode "offset=-1" --data-urlencode "timeout=0")
+  last=$(printf '%s' "$r" | sed -n 's/.*"update_id":\([0-9]*\).*/\1/p' | tail -1)
+  [ -n "$last" ] && offset=$((last + 1))
+fi
+
+while :; do
+  r=$(tg getUpdates --data-urlencode "offset=$offset" --data-urlencode "timeout=50" \
+        --data-urlencode 'allowed_updates=["message"]')
+  if [ -z "$r" ]; then sleep 5; continue; fi
+  case "$r" in
+    *'"ok":true'*) : ;;
+    *) log "API ответил не ок: $(printf '%s' "$r" | head -c 200)"; sleep 15; continue ;;
+  esac
+
+  printf '%s' "$r" | sed 's/{"update_id":/\
+&/g' | grep '"update_id"' | while IFS= read -r u; do
+    uid=$(printf '%s' "$u" | sed -n 's/.*"update_id":\([0-9]*\).*/\1/p')
+    [ -n "$uid" ] || continue
+    echo $((uid + 1)) > "$OFFSET_FILE"
+    chat=$(printf '%s' "$u" | sed -n 's/.*"chat":{"id":\(-\{0,1\}[0-9]*\).*/\1/p')
+    text=$(printf '%s' "$u" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+    [ -n "$chat" ] && [ -n "$text" ] || continue
+    if allowed "$chat"; then
+      log "команда от $chat: $text"
+      handle "$chat" "$text"
+    else
+      log "чужой чат $chat: $text"
+      send "$chat" "Этот бот только для своих.
+Твой chat_id: $chat
+Чтобы разрешить — впиши его в BOT_ALLOW в /etc/rctl-bot.conf на роутере и перезапусти: /etc/init.d/rctl-bot restart"
+    fi
+  done
+  no=$(cat "$OFFSET_FILE" 2>/dev/null || echo "$offset")
+  [ "$no" -gt "$offset" ] 2>/dev/null && offset=$no
+done

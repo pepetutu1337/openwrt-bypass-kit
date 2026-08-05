@@ -1,0 +1,76 @@
+#!/bin/sh
+# CGI-бэкенд панели, живущей на самом роутере (uhttpd, без python).
+# Отдаёт text/plain — фронт просто печатает ответ в консоль.
+# Наружу торчать не должен: uhttpd-инстанс слушает только LAN, см. install.sh.
+#
+# Принцип тот же, что у панели на Деке: не «выполни что дали», а строгий
+# список разрешённых действий. Всё, что приходит из браузера, проверяется
+# регуляркой до того, как попасть в аргументы rctl.
+
+RCTL=/usr/sbin/rctl
+export RCTL_LOCAL=1
+
+printf 'Content-Type: text/plain; charset=utf-8\r\n'
+printf 'Cache-Control: no-store\r\n'
+printf 'X-Content-Type-Options: nosniff\r\n'
+printf '\r\n'
+
+# --- разбор query string -----------------------------------------------------
+qs="${QUERY_STRING:-}"
+field() {
+  printf '%s' "$qs" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1 |
+    sed 's/+/ /g; s/%\(..\)/\\x\1/g' | ( printf '%b' "$(cat)" )
+}
+
+a=$(field a)
+v=$(field v)
+
+NAME_RE='^[A-Za-z0-9._-]{1,64}$'
+DOM_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+
+die() { echo "✗ $1"; exit 0; }
+
+case "$a" in
+  # --- только чтение ---
+  status)    exec "$RCTL" status ;;
+  doctor)    exec "$RCTL" doctor ;;
+  yttest)    exec "$RCTL" yttest ;;
+  info)      exec "$RCTL" info ;;
+  meta)      exec "$RCTL" meta ;;
+  nodes)     exec "$RCTL" nodes list ;;
+  domains)   exec "$RCTL" domains list ;;
+  geolist)   exec "$RCTL" geoblock list ;;
+  geocount)  exec "$RCTL" geoblock count ;;
+  tgcount)   exec "$RCTL" telegram-cidr count ;;
+  logs)
+    case "$v" in
+      sing-box|zapret|dns) exec "$RCTL" logs "$v" ;;
+      *) die "неизвестный лог: $v" ;;
+    esac ;;
+
+  # --- меняют состояние, но безопасно и обратимо ---
+  fix)       exec "$RCTL" fix ;;
+  best)      exec "$RCTL" nodes best ;;
+  auto)      exec "$RCTL" nodes auto ;;
+  use)
+    echo "$v" | grep -qE "$NAME_RE" || die "кривое имя ноды"
+    exec "$RCTL" nodes use "$v" ;;
+  restart)
+    case "$v" in
+      sing-box|zapret|dnsmasq|https-dns-proxy) exec "$RCTL" restart "$v" ;;
+      *) die "нельзя рестартить: $v" ;;
+    esac ;;
+  quic)
+    case "$v" in on|off) exec "$RCTL" quic "$v" ;; *) die "quic on|off" ;; esac ;;
+  geoupdate) exec "$RCTL" geoblock update ;;
+  tgupdate)  exec "$RCTL" telegram-cidr update ;;
+  watchdog)  exec "$RCTL" watchdog ;;
+  domadd)
+    echo "$v" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
+    exec "$RCTL" domains add "$v" ;;
+  domrm)
+    echo "$v" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
+    exec "$RCTL" domains rm "$v" ;;
+
+  *) die "неизвестное действие: ${a:-<пусто>}" ;;
+esac
