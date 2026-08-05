@@ -82,6 +82,25 @@
   .node.dead{opacity:.5}
   .bar{height:4px;border-radius:2px;background:var(--ok);flex:none}
 
+  .note{color:var(--dim);font-size:14px;margin:0 0 12px;line-height:1.5}
+  .note code{background:#0d1117;padding:1px 5px;border-radius:5px}
+  .note b{color:var(--warn)}
+
+  /* индикатор долгой операции */
+  #work{display:none;align-items:center;gap:11px;background:var(--card2);border:1px solid var(--line);
+        border-radius:11px;padding:11px 15px;margin-bottom:14px;font-size:14px}
+  #work.on{display:flex}
+  .spin{width:15px;height:15px;border-radius:50%;border:2px solid var(--line);
+        border-top-color:var(--acc);animation:spin .8s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #worktx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #worksec{color:var(--dim);font-variant-numeric:tabular-nums}
+
+  .tune{margin-top:13px}
+  .tuneline{display:flex;align-items:center;gap:11px;background:var(--card2);border:1px solid var(--line);
+            border-radius:10px;padding:10px 13px;margin-bottom:7px}
+  .tuneline code{flex:1;font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;color:var(--tx)}
+
   @media (max-width:560px){
     body{padding:12px}
     .bigrow{grid-template-columns:1fr}
@@ -97,6 +116,12 @@
     <h1 id="title">Роутер</h1>
     <span class="sub" id="subtitle">подключаюсь…</span>
   </header>
+
+  <div id="work">
+    <i class="spin"></i>
+    <span id="worktx">идёт работа…</span>
+    <span id="worksec">0 с</span>
+  </div>
 
   <div class="card">
     <div class="light">
@@ -165,6 +190,20 @@
     </div>
 
     <div class="card">
+      <h2>Стратегия обхода</h2>
+      <p class="note">Гоняет штатный <code>blockcheck</code> и ищет параметры, которые сейчас пробивают
+        блокировку. <b>На время подбора обход отключается</b> — blockcheck поднимает свой nfqws.
+        У всех дома интернет будет как без обхода. Вернётся само.</p>
+      <div class="row">
+        <button class="sm" data-act="tunestart" data-v="quick">Быстрый (~2 мин)</button>
+        <button class="sm" data-act="tunestart" data-v="standard">Обычный (5–15 мин)</button>
+        <button class="sm" data-act="tunestart" data-v="force">Полный (долго)</button>
+        <button class="sm danger" data-act="tunestop">Прервать</button>
+      </div>
+      <div id="tunebox"></div>
+    </div>
+
+    <div class="card">
       <h2>Логи</h2>
       <div class="row">
         <button class="sm" data-act="logs" data-v="sing-box">Прокси</button>
@@ -214,11 +253,35 @@ function render(text){
   });
 }
 
+/* индикатор долгой операции: видно, что не зависло */
+const WORKNAME = {
+  fix:'чиню', yttest:'проверяю ютуб', nodes:'меряю серверы', best:'ищу быстрейший',
+  auto:'включаю автовыбор', use:'переключаю сервер', doctor:'полный чекап',
+  geoupdate:'обновляю geoblock', geolist:'читаю список', domains:'читаю домены',
+  tunestart:'запускаю подбор', tuneapply:'применяю стратегию', tunestop:'прерываю',
+  logs:'читаю лог', info:'собираю инфо', restart:'перезапускаю службу'
+};
+let workTimer = null;
+function workOn(act){
+  const w = $('#work'), t0 = Date.now();
+  $('#worktx').textContent = (WORKNAME[act] || 'работаю') + '…';
+  $('#worksec').textContent = '0 с';
+  w.classList.add('on');
+  workTimer = setInterval(() => {
+    $('#worksec').textContent = Math.round((Date.now() - t0) / 1000) + ' с';
+  }, 500);
+}
+function workOff(){
+  clearInterval(workTimer);
+  $('#work').classList.remove('on');
+}
+
 async function call(act, v){
   if (busy) return null;
   busy = true;
   document.querySelectorAll('button').forEach(b => b.disabled = true);
   bulb.classList.add('busy');
+  if (act !== 'status' && act !== 'meta' && act !== 'tunestatus') workOn(act);
   try {
     const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
     const r = await fetch(u, {cache:'no-store'});
@@ -230,6 +293,7 @@ async function call(act, v){
     busy = false;
     document.querySelectorAll('button').forEach(b => b.disabled = false);
     bulb.classList.remove('busy');
+    workOff();
   }
 }
 
@@ -312,11 +376,82 @@ async function run(act, v){
     toast(bad ? 'Ютуб уехал в прокси — жми «Починить»' : 'С роутера ютуб в порядке', bad ? 'bad' : 'ok');
   }
   if (act === 'restart' || act === 'quic' || act === 'geoupdate') refresh();
+  if (act === 'tunestart'){
+    if (/✓ подбор запущен/.test(t)){
+      toast('Подбор пошёл. Обход пока отключён', 'ok');
+      if (tunePoll) clearInterval(tunePoll);
+      tuneTick();
+      tunePoll = setInterval(tuneTick, 5000);
+    } else {
+      toast(t.split('\n')[0] || 'не запустилось', 'bad');
+    }
+  }
+  if (act === 'tunestop'){
+    if (tunePoll){ clearInterval(tunePoll); tunePoll = null; }
+    toast('Подбор прерван, обход возвращён', 'ok');
+    refresh();
+  }
+  if (act === 'tuneapply'){
+    toast(/✓ применено/.test(t) ? 'Стратегия применена' : 'Не применилось, откатил', /✓/.test(t) ? 'ok' : 'bad');
+    refresh();
+  }
 }
 
 async function refresh(){
   const t = await call('status');
   if (t) readStatus(t);
+}
+
+/* ---- подбор стратегии zapret ---- */
+let tunePoll = null;
+
+async function tuneTick(){
+  // статус читаем в обход call(), чтобы опрос не блокировал кнопки
+  let t;
+  try {
+    const r = await fetch('cgi-bin/api?a=tunestatus', {cache:'no-store'});
+    t = await r.text();
+  } catch(e){ return; }
+
+  const box = $('#tunebox');
+  const phase = (t.match(/^фаза:\s*(.*)$/m) || [,''])[1];
+  const el = (t.match(/^прошло:\s*(.*)$/m) || [,''])[1];
+  const cur = (t.match(/^сейчас:\s*(.*)$/m) || [,''])[1];
+  const found = (t.match(/^найдено рабочих:\s*(\d+)/m) || [,'0'])[1];
+  const checks = (t.match(/^проверок сделано:\s*(\d+)/m) || [,'0'])[1];
+
+  box.innerHTML = `<div class="tune">
+    <div class="tuneline"><i class="spin"></i>
+      <code>${phase} · ${el} · проверок ${checks} · найдено ${found}</code></div>
+    ${cur ? `<div class="tuneline"><code>${cur.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</code></div>` : ''}
+  </div>`;
+
+  if (/готово|прерван|оборвался/.test(phase)){
+    clearInterval(tunePoll); tunePoll = null;
+    box.querySelectorAll('.spin').forEach(s => s.remove());
+    await tuneResults();
+  }
+}
+
+async function tuneResults(){
+  const r = await fetch('cgi-bin/api?a=tuneresult', {cache:'no-store'});
+  const t = (await r.text()).trim();
+  const box = $('#tunebox');
+  if (!t){
+    box.insertAdjacentHTML('beforeend',
+      '<p class="note">Рабочих стратегий не нашлось. Либо блокировки сейчас нет, либо нужен полный уровень.</p>');
+    return;
+  }
+  const lines = t.split('\n').filter(Boolean);
+  const html = lines.map((l, i) =>
+    `<div class="tuneline"><code>${l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</code>
+     <button class="sm" data-tune="${i+1}">Применить</button></div>`).join('');
+  box.insertAdjacentHTML('beforeend',
+    `<div class="tune"><p class="note">Нашлось: ${lines.length}. Применение правит только строку TCP 443,
+     конфиг бэкапится, при ухудшении откат автоматический.</p>${html}</div>`);
+  box.querySelectorAll('button[data-tune]').forEach(b => {
+    b.onclick = () => run('tuneapply', b.dataset.tune);
+  });
 }
 
 document.querySelectorAll('button[data-act]').forEach(b => {

@@ -47,8 +47,8 @@ if [ "$MODE" = uninstall ]; then
     uci -q delete uhttpd.panel && uci commit uhttpd
     /etc/init.d/uhttpd restart >/dev/null 2>&1
     [ -x /etc/init.d/rctl-bot ] && { /etc/init.d/rctl-bot stop >/dev/null 2>&1; /etc/init.d/rctl-bot disable >/dev/null 2>&1; }
-    rm -rf /www/panel /etc/uhttpd-panel.auth /usr/sbin/rctl \
-           /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf
+    rm -rf /www/panel /etc/uhttpd-panel.auth /usr/sbin/rctl /usr/sbin/zapret-tune \
+           /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
     crontab -l 2>/dev/null | grep -v "rctl fix" | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
     echo "✓ панель, rctl, бот и крон убраны (uhttpd на 80/443 не тронут)"
@@ -60,6 +60,11 @@ say "заливаю rctl"
 $SSH 'cat > /usr/sbin/rctl.new' < "$DIR/rctl"
 $SSH 'sh -n /usr/sbin/rctl.new && mv /usr/sbin/rctl.new /usr/sbin/rctl && chmod +x /usr/sbin/rctl' \
   || { echo "✗ rctl не прошёл проверку синтаксиса на роутере"; exit 1; }
+
+say "заливаю подборщик стратегии zapret"
+$SSH 'cat > /usr/sbin/zapret-tune.new' < "$DIR/router/zapret-tune"
+$SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/zapret-tune && chmod +x /usr/sbin/zapret-tune' \
+  || { echo "✗ zapret-tune не прошёл проверку синтаксиса"; exit 1; }
 
 say "заливаю панель"
 $SSH 'mkdir -p /www/panel/cgi-bin'
@@ -122,8 +127,16 @@ if [ -n "$BOT_TOKEN" ]; then
   $SSH '/etc/init.d/rctl-bot enable; /etc/init.d/rctl-bot restart; sleep 2
         pgrep -f rctl-bot >/dev/null && echo "✓ бот запущен" || echo "✗ бот не поднялся, смотри logread -e rctl-bot"'
 else
+  # токен не передали: если он уже прописан — просто перезапускаем с новым кодом
   $SSH '[ -f /etc/rctl-bot.conf ] || { printf "BOT_TOKEN=\nBOT_ALLOW=\"\"\nBOT_PROXY=127.0.0.1:1180\n" > /etc/rctl-bot.conf; chmod 600 /etc/rctl-bot.conf; }
-        echo "· бот залит, но без токена не стартует. Вписать: /etc/rctl-bot.conf, затем /etc/init.d/rctl-bot enable; /etc/init.d/rctl-bot start"'
+        . /etc/rctl-bot.conf
+        if [ -n "${BOT_TOKEN:-}" ]; then
+          /etc/init.d/rctl-bot enable 2>/dev/null
+          /etc/init.d/rctl-bot restart >/dev/null 2>&1; sleep 2
+          pgrep -f rctl-bot >/dev/null && echo "✓ бот перезапущен с новым кодом" || echo "✗ бот не поднялся, смотри logread -e rctl-bot"
+        else
+          echo "· бот залит, но без токена не стартует. Вписать: /etc/rctl-bot.conf, затем /etc/init.d/rctl-bot enable; /etc/init.d/rctl-bot start"
+        fi'
 fi
 
 say "проверяю, что панель отвечает"

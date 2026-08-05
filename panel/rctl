@@ -512,6 +512,15 @@ case "$cmd" in
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
   telegram-cidr)
     case "${1:-count}" in update) remote "$R_TGCIDR_UPDATE" ;; count) remote "$R_TGCIDR_COUNT" ;; *) echo "telegram-cidr update|count"; exit 1;; esac ;;
+  tune)     # подбор стратегии zapret; сам скрипт лежит на роутере
+    a="${1:-status}"; shift 2>/dev/null || true
+    case "$a" in
+      start)  remote '/usr/sbin/zapret-tune start "$@"' "${1:-youtube.com}" "${2:-standard}" ;;
+      apply)  [ $# -ge 1 ] || { echo "rctl tune apply \"СТРАТЕГИЯ\""; exit 1; }
+              remote '/usr/sbin/zapret-tune apply "$1"' "$1" ;;
+      status|result|stop|log) remote "/usr/sbin/zapret-tune $a" ;;
+      *) echo "tune start [домен] [quick|standard|force] | status | result | apply СТРАТЕГИЯ | stop | log"; exit 1 ;;
+    esac ;;
   yttest)   remote "$R_YTTEST" ;;
   fix)      remote "$R_FIX" ;;
   backup)   remote "$R_BACKUP" ;;
@@ -602,6 +611,8 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl restart sing-box|zapret|dnsmasq|https-dns-proxy
   rctl toggle СЛУЖБА on|off  включить/выключить службу (без рестарта роутера)
   rctl fix                   починить одной командой: поднять упавшее, сменить мёртвую/тормозящую ноду
+  rctl tune start|status|result|apply|stop  подбор стратегии zapret через blockcheck
+                             (на время подбора обход отключается — blockcheck поднимает свой nfqws)
   rctl yttest                тест ютуба: не уехал ли в прокси, жив ли zapret, скорость, googlevideo
   rctl nodes list|test|best|use ИМЯ|auto живые ноды через clash API :9090 (best = закрепить лучшую по пингу)
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)

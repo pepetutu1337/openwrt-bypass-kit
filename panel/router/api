@@ -48,6 +48,23 @@ case "$a" in
       *) die "неизвестный лог: $v" ;;
     esac ;;
 
+  # --- подбор стратегии zapret ---
+  tunestatus) exec /usr/sbin/zapret-tune status ;;
+  tuneresult) exec /usr/sbin/zapret-tune result ;;
+  tunelog)    exec /usr/sbin/zapret-tune log ;;
+  tunestop)   exec /usr/sbin/zapret-tune stop ;;
+  tunestart)
+    case "$v" in
+      quick|standard|force) exec /usr/sbin/zapret-tune start youtube.com "$v" ;;
+      *) die "уровень: quick|standard|force" ;;
+    esac ;;
+  tuneapply)
+    # по номеру строки из result, чтобы строка стратегии не ездила через браузер
+    echo "$v" | grep -qE '^[0-9]{1,2}$' || die "нужен номер стратегии"
+    s=$(/usr/sbin/zapret-tune result | sed -n "${v}p")
+    [ -n "$s" ] || die "нет стратегии №$v — перезапусти подбор"
+    exec /usr/sbin/zapret-tune apply "$s" ;;
+
   # --- меняют состояние, но безопасно и обратимо ---
   fix)       exec "$RCTL" fix ;;
   best)      exec "$RCTL" nodes best ;;

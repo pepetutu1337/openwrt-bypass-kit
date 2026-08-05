@@ -1,0 +1,184 @@
+#!/bin/sh
+# Подбор рабочей стратегии nfqws штатным blockcheck.sh из zapret.
+#
+# Запускается в фоне, состояние пишет в файлы — панель и бот их читают,
+# чтобы показывать прогресс и было видно, что процесс не завис.
+#
+#   zapret-tune start [ДОМЕН] [УРОВЕНЬ]   уровень: quick | standard | force
+#   zapret-tune status                    фаза, сколько прошло, найденное
+#   zapret-tune result                    только список рабочих стратегий
+#   zapret-tune stop                      прервать и вернуть zapret на место
+#   zapret-tune apply "СТРАТЕГИЯ"         применить к TCP 443 с откатом
+#
+# ВАЖНО: blockcheck меряет честно только при остановленном zapret — он сам
+# поднимает nfqws со своими параметрами. Значит на время подбора обход у всех
+# в доме отключается. Скрипт всегда возвращает zapret обратно: и штатно,
+# и по trap при обрыве.
+set -u
+
+BC=/opt/zapret/blockcheck.sh
+CFG=/opt/zapret/config
+LOG=/tmp/zapret-tune.log
+STATE=/tmp/zapret-tune.state
+PIDF=/tmp/zapret-tune.pid
+
+log_state() { echo "$1" > "$STATE"; }
+
+cmd_start() {
+  dom=${1:-youtube.com}
+  level=${2:-standard}
+  case "$level" in quick|standard|force) : ;; *) echo "уровень: quick|standard|force"; exit 1 ;; esac
+  [ -f "$BC" ] || { echo "нет $BC — zapret стоит не отсюда"; exit 1; }
+
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+    echo "подбор уже идёт (pid $(cat "$PIDF"))"; exit 1
+  fi
+
+  : > "$LOG"
+  log_state "start $(date +%s) $dom $level"
+  echo "✓ подбор запущен: домен $dom, уровень $level"
+  echo "  обход на время подбора отключён, вернётся сам"
+
+  # сам прогон уходит в фон: blockcheck идёт минутами
+  (
+    trap 'log_state "aborted $(date +%s)"; /etc/init.d/zapret start >/dev/null 2>&1; rm -f "$PIDF"' INT TERM
+    echo ":: останавливаю zapret — иначе его собственный десинк искажает замеры" >> "$LOG"
+    /etc/init.d/zapret stop >> "$LOG" 2>&1
+    sleep 1
+    echo ":: запускаю blockcheck (домен $dom, уровень $level)" >> "$LOG"
+    BATCH=1 \
+    DOMAINS="$dom" \
+    SCANLEVEL="$level" \
+    REPEATS=2 \
+    ENABLE_HTTP=0 \
+    ENABLE_HTTPS=1 \
+    ENABLE_HTTP3=0 \
+    IPV6=0 \
+    SKIP_TPWS=1 \
+    sh "$BC" >> "$LOG" 2>&1
+    rc=$?
+    echo ":: возвращаю zapret" >> "$LOG"
+    /etc/init.d/zapret start >> "$LOG" 2>&1
+    log_state "done $(date +%s) rc=$rc"
+    rm -f "$PIDF"
+  ) &
+  echo $! > "$PIDF"
+}
+
+# сколько рабочих стратегий уже найдено и на какой фазе идём
+cmd_status() {
+  [ -f "$STATE" ] || { echo "подбор ни разу не запускался"; exit 0; }
+  set -- $(cat "$STATE")
+  st=$1; ts=${2:-0}
+  now=$(date +%s)
+  el=$((now - ts))
+  running=0
+  [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null && running=1
+
+  case "$st" in
+    start) [ "$running" = 1 ] && echo "фаза: идёт подбор" || echo "фаза: оборвался (процесса нет)" ;;
+    done)  echo "фаза: готово" ;;
+    aborted) echo "фаза: прерван" ;;
+  esac
+  echo "прошло: $((el / 60)) мин $((el % 60)) с"
+  [ -f "$LOG" ] || return 0
+  cur=$(grep -E "^(\*|::)" "$LOG" | tail -1)
+  [ -n "$cur" ] && echo "сейчас: $cur"
+  echo "проверок сделано: $(grep -c "^\* " "$LOG" 2>/dev/null || echo 0)"
+  echo "найдено рабочих: $(cmd_result | grep -c . 2>/dev/null || echo 0)"
+}
+
+# рабочие стратегии из секции SUMMARY: строки вида
+#   curl_test_https_tls12 ipv4 youtube.com : nfqws --dpi-desync=...
+# неудачные помечены "not working" — их отбрасываем
+cmd_result() {
+  [ -f "$LOG" ] || return 0
+  sed -n '/^\* SUMMARY/,$p' "$LOG" \
+    | grep " : nfqws " \
+    | grep -v "not working" \
+    | sed 's/.* : nfqws //' \
+    | sed 's/[[:space:]]*$//' \
+    | awk '!seen[$0]++'
+}
+
+cmd_stop() {
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+    kill -TERM "$(cat "$PIDF")" 2>/dev/null
+    sleep 1
+    # blockcheck мог оставить свой nfqws — прибираем и поднимаем штатный
+    for p in $(pidof nfqws 2>/dev/null); do kill "$p" 2>/dev/null; done
+    /etc/init.d/zapret start >/dev/null 2>&1
+    rm -f "$PIDF"
+    log_state "aborted $(date +%s)"
+    echo "✓ подбор прерван, zapret возвращён"
+  else
+    echo "подбор не идёт"
+  fi
+}
+
+# Применяем стратегию к TCP 443 — той строке NFQWS_OPT, что отвечает за https.
+# Бэкап, проверка живости, откат если стало хуже.
+cmd_apply() {
+  s=${1:-}
+  [ -n "$s" ] || { echo "нужна строка стратегии"; exit 1; }
+  case "$s" in
+    *[\`\$\;\&\|]*) echo "✗ подозрительные символы в стратегии, отказ"; exit 1 ;;
+  esac
+  [ -f "$CFG" ] || { echo "нет $CFG"; exit 1; }
+
+  ts=$(date +%Y%m%d-%H%M%S)
+  cp "$CFG" "$CFG.bak-$ts"
+
+  before=$(probe)
+  echo "до применения: $before"
+
+  awk -v strat="$s" '
+    /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; next }
+    { print }
+  ' "$CFG.bak-$ts" > /tmp/zapret-config.new
+
+  if ! grep -q "^--filter-tcp=443 " /tmp/zapret-config.new; then
+    echo "✗ не нашёл строку --filter-tcp=443 в конфиге — не трогаю"
+    rm -f /tmp/zapret-config.new "$CFG.bak-$ts"
+    exit 1
+  fi
+
+  cp /tmp/zapret-config.new "$CFG"
+  /etc/init.d/zapret restart >/dev/null 2>&1
+  sleep 3
+
+  if ! pidof nfqws >/dev/null 2>&1; then
+    echo "✗ zapret не поднялся — откатываю"
+    cp "$CFG.bak-$ts" "$CFG"; /etc/init.d/zapret restart >/dev/null 2>&1
+    exit 1
+  fi
+
+  after=$(probe)
+  echo "после применения: $after"
+  if [ "${after%% *}" -ge "${before%% *}" ] 2>/dev/null; then
+    echo "✓ применено (бэкап: $CFG.bak-$ts)"
+  else
+    echo "✗ стало хуже — откатываю"
+    cp "$CFG.bak-$ts" "$CFG"; /etc/init.d/zapret restart >/dev/null 2>&1
+    echo "  вернул как было"
+    exit 1
+  fi
+}
+
+# грубая проба: сколько КБ/с отдаёт страница ютуба (0, если не открылась)
+probe() {
+  r=$(curl -sS -m 25 -o /dev/null -w "%{speed_download} %{http_code}" \
+        "https://www.youtube.com/watch?v=aqz-KE-bpKQ" 2>/dev/null) || r="0 000"
+  set -- $r
+  echo "$(( ${1%%.*} / 1024 )) КБ/с (код $2)"
+}
+
+case "${1:-status}" in
+  start)  shift; cmd_start "$@" ;;
+  status) cmd_status ;;
+  result) cmd_result ;;
+  stop)   cmd_stop ;;
+  apply)  shift; cmd_apply "$@" ;;
+  log)    tail -40 "$LOG" 2>/dev/null || echo "лога нет" ;;
+  *) echo "zapret-tune start [домен] [quick|standard|force] | status | result | apply СТРАТЕГИЯ | stop | log" ;;
+esac

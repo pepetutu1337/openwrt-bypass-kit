@@ -1,27 +1,29 @@
 #!/bin/sh
 # Telegram-бот к роутеру. Живёт на самом роутере, только исходящие соединения —
-# ни портов наружу, ни пробросов. Ходит в API через локальный SOCKS sing-box,
+# ни портов наружу, ни пробросов. В API ходит через локальный SOCKS sing-box,
 # потому что api.telegram.org с роутера напрямую не открывается.
 #
 # Настройки: /etc/rctl-bot.conf
 #   BOT_TOKEN=123456:AA...      токен от @BotFather
-#   BOT_ALLOW="11111 22222"     chat_id, кому можно (через пробел)
+#   BOT_ALLOW="11111 22222"     владельцы (полный доступ)
 #   BOT_PROXY=127.0.0.1:1180    локальный SOCKS sing-box
 #   BOT_DEBUG=1                 писать сырые ответы API в лог
 #
-# Кто не в BOT_ALLOW — команд не выполняет. Если список пуст, бот просто
-# сообщает свой chat_id, чтобы было что вписать в конфиг.
+# Доступ семьи: /etc/rctl-bot.acl, строки вида "123456:family:Мама".
+# Незнакомец пишет боту — владельцу прилетает запрос с кнопками.
 #
-# Оформление: parse_mode=HTML. Таблиц в Telegram нет ни в каком виде, поэтому
-# всё табличное идёт моноширинным блоком <pre> с выровненными колонками.
+# Оформление: Bot API 10.1 sendRichMessage — markdown с настоящими таблицами.
+# Если rich не прошёл, сообщение уходит обычным sendMessage в HTML.
 set -u
 
 CONF=/etc/rctl-bot.conf
+ACL=/etc/rctl-bot.acl
 [ -f "$CONF" ] || { echo "нет $CONF"; exit 1; }
 # shellcheck disable=SC1090
 . "$CONF"
 
 RCTL=/usr/sbin/rctl
+TUNE=/usr/sbin/zapret-tune
 export RCTL_LOCAL=1
 BOT_PROXY="${BOT_PROXY:-127.0.0.1:1180}"
 BOT_ALLOW="${BOT_ALLOW:-}"
@@ -31,30 +33,66 @@ KB='{"keyboard":[["Статус","Починить"],["Ютуб","Серверы
 
 log() { logger -t rctl-bot "$*"; }
 
-tg() { # tg МЕТОД [curl-args…]
-  m=$1; shift
-  curl -s --max-time 70 --socks5-hostname "$BOT_PROXY" "$API/$m" "$@"
+tg() { m=$1; shift; curl -s --max-time 70 --socks5-hostname "$BOT_PROXY" "$API/$m" "$@"; }
+
+# ---------- отправка ----------------------------------------------------------
+
+# текст -> строковый литерал JSON (без кавычек по краям)
+json_esc() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' \
+  | awk 'BEGIN{ORS=""} {if (NR>1) printf "\\n"; print}'
 }
 
-# < > & ломают HTML-разметку Telegram
-esc() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+esc_html() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
-send() { # send CHAT ТЕКСТ [РАЗМЕТКА-КНОПОК]
+# Красивый ответ: markdown с таблицами через sendRichMessage.
+# Возвращает message_id (или пусто).
+rich() { # rich CHAT MARKDOWN [KEYBOARD]
+  body="{\"markdown\":\"$(printf '%s' "$2" | json_esc)\"}"
+  # клавиатуру передаём файлом: в её JSON есть пробелы, а подстановка
+  # аргументов через ${3:+...} порвала бы строку на куски
+  if [ -n "${3:-}" ]; then
+    printf '%s' "$3" > /tmp/rctl-bot.kbd
+    r=$(tg sendRichMessage \
+          --data-urlencode "chat_id=$1" \
+          --data-urlencode "rich_message=$body" \
+          --data-urlencode "reply_markup@/tmp/rctl-bot.kbd")
+  else
+    r=$(tg sendRichMessage \
+          --data-urlencode "chat_id=$1" \
+          --data-urlencode "rich_message=$body")
+  fi
+  case "$r" in
+    *'"ok":true'*) return 0 ;;
+  esac
+  log "rich не прошёл: $(printf '%s' "$r" | head -c 160) — падаю на HTML"
+  send_html "$1" "$(printf '%s' "$2" | esc_html)" "${3:-}" > /dev/null
+}
+
+send_html() { # send_html CHAT HTML [KEYBOARD]
   printf '%s' "$2" | head -c 3800 > /tmp/rctl-bot.msg
-  tg sendMessage -o /dev/null \
-    --data-urlencode "chat_id=$1" \
-    --data-urlencode "text@/tmp/rctl-bot.msg" \
-    --data-urlencode "parse_mode=HTML" \
-    --data-urlencode "reply_markup=${3:-$KB}" \
-  || log "не отправилось в $1"
+  r=$(tg sendMessage \
+        --data-urlencode "chat_id=$1" \
+        --data-urlencode "text@/tmp/rctl-bot.msg" \
+        --data-urlencode "parse_mode=HTML" \
+        --data-urlencode "reply_markup=${3:-$KB}")
   rm -f /tmp/rctl-bot.msg
+  printf '%s' "$r" | sed -n 's/.*"message_id":\([0-9]*\).*/\1/p' | head -1
 }
 
-# всплывашка на нажатие инлайн-кнопки, чтобы часики в клиенте не крутились
+edit_html() { # edit_html CHAT MSGID HTML
+  printf '%s' "$3" | head -c 3800 > /tmp/rctl-bot.edit
+  tg editMessageText -o /dev/null \
+    --data-urlencode "chat_id=$1" \
+    --data-urlencode "message_id=$2" \
+    --data-urlencode "text@/tmp/rctl-bot.edit" \
+    --data-urlencode "parse_mode=HTML"
+  rm -f /tmp/rctl-bot.edit
+}
+
 answer() { tg answerCallbackQuery -o /dev/null --data-urlencode "callback_query_id=$1" --data-urlencode "text=${2:-}"; }
 
-# Telegram отдаёт кириллицу как \uXXXX, а busybox printf %b такое не понимает.
-# Разворачиваем сами: hex -> codepoint -> байты UTF-8.
+# Telegram отдаёт кириллицу как \uXXXX, busybox printf %b такое не разворачивает
 unesc() {
   awk '{
     s=$0; out="";
@@ -72,71 +110,87 @@ unesc() {
   }'
 }
 
-allowed() {
-  [ -n "$BOT_ALLOW" ] || return 1
-  for c in $BOT_ALLOW; do [ "$c" = "$1" ] && return 0; done
-  return 1
+# ---------- доступ ------------------------------------------------------------
+
+# owner — всё; family — только безопасное; пусто — чужой
+role_of() {
+  for c in $BOT_ALLOW; do [ "$c" = "$1" ] && { echo owner; return; }; done
+  [ -f "$ACL" ] || return
+  awk -F: -v id="$1" '$1 == id { print $2; exit }' "$ACL"
 }
 
-# ---------- красивые ответы ---------------------------------------------------
+acl_add() { # acl_add ID РОЛЬ ИМЯ
+  touch "$ACL"; chmod 600 "$ACL"
+  acl_del "$1"
+  printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$ACL"
+}
+acl_del() {
+  [ -f "$ACL" ] || return 0
+  grep -v "^$1:" "$ACL" > "$ACL.tmp" 2>/dev/null; mv "$ACL.tmp" "$ACL"; chmod 600 "$ACL"
+}
 
-fmt_status() {
+owners() { echo "$BOT_ALLOW"; }
+
+# ---------- вывод -------------------------------------------------------------
+
+md_status() {
   s=$($RCTL status 2>&1)
-  ok() { printf '%s' "$s" | grep -q "^$1 ●" && echo "✅" || echo "❌"; }
+  mark() { printf '%s' "$s" | grep -q "^$1 ●" && echo "🟢 работает" || echo "🔴 лежит"; }
   node=$(printf '%s' "$s" | sed -n 's/^активная нода: \(.*\)$/\1/p')
   dom=$(printf '%s' "$s" | sed -n 's/^проксируемых доменов (uci): \(.*\)$/\1/p')
   geo=$(printf '%s' "$s" | sed -n 's/^geoblock: \([0-9]*\).*/\1/p')
   quic=$(printf '%s' "$s" | grep -q "QUIC-блок: включён" && echo "включён" || echo "выключен")
   down=$(printf '%s' "$s" | grep -c "✗ stopped")
+  [ "$down" = 0 ] && head="## 🟢 Всё работает" || head="## 🔴 Что-то лежит"
 
-  if [ "$down" = 0 ]; then head="🟢 <b>Всё работает</b>"; else head="🔴 <b>Что-то лежит</b>"; fi
+  cat <<EOF
+$head
 
-  printf '%s\n\n' "$head"
-  printf '<pre>%s\n' "служба      состояние"
-  printf '%s\n' "прокси      $(ok sing-box)"
-  printf '%s\n' "zapret      $(ok zapret)"
-  printf '%s\n' "DNS         $(ok DoH)"
-  printf '%s\n' "dnsmasq     $(ok dnsmasq)"
-  printf '</pre>\n'
-  printf 'Сервер: <b>%s</b>\n' "${node:-неизвестен}"
-  printf 'Домены: <code>%s</code> своих + <code>%s</code> geoblock\n' "${dom:-0}" "${geo:-0}"
-  printf 'QUIC: %s\n' "$quic"
+| служба | состояние |
+|---|---|
+| прокси | $(mark sing-box) |
+| zapret | $(mark zapret) |
+| DNS | $(mark DoH) |
+| dnsmasq | $(mark dnsmasq) |
+
+**Сервер:** \`${node:-неизвестен}\` · **QUIC:** $quic
+**Домены:** ${dom:-0} своих + ${geo:-0} geoblock
+EOF
 }
 
-# Таблица серверов + инлайн-кнопки выбора. Кнопки только для живых.
-fmt_nodes() { # печатает текст; JSON кнопок кладёт в /tmp/rctl-bot.kb
-  n=$($RCTL nodes list 2>&1)
-  printf '%s' "$n" | awk '
+# Таблица серверов + инлайн-кнопки. Кнопки только для живых.
+md_nodes() { # печатает markdown; клавиатуру кладёт в /tmp/rctl-bot.kb
+  $RCTL nodes list 2>&1 | awk '
     /^(=>|  )[[:space:]]*[A-Za-z0-9._-]+[[:space:]]/ {
       act = ($1 == "=>");
       name = act ? $2 : $1;
       ms = act ? $3 : $2;
       if (ms == "-") { dead[++d] = name; next }
-      alive[++a] = name; pings[a] = ms + 0;
+      alive[++a] = name; pings[a] = ms + 0; active[a] = act;
     }
     END {
-      print "<b>Серверы обхода</b>";
-      print "";
-      # printf выравнивает по байтам, а кириллица двухбайтовая — поэтому шапку
-      # доводим пробелами вручную, иначе колонка уезжает
-      print "<pre>сервер       пинг";
-      # сортировка пузырьком: список короткий, зато без зависимостей
       for (i = 1; i <= a; i++) for (j = i+1; j <= a; j++)
         if (pings[j] < pings[i]) {
           t = pings[i]; pings[i] = pings[j]; pings[j] = t;
           t = alive[i]; alive[i] = alive[j]; alive[j] = t;
+          t = active[i]; active[i] = active[j]; active[j] = t;
         }
-      for (i = 1; i <= a; i++) printf "%-12s %4d мс\n", alive[i], pings[i];
-      print "</pre>";
-      if (d > 0) {
-        printf "Молчат (%d): <i>", d;
-        for (i = 1; i <= d; i++) printf "%s%s", dead[i], (i < d ? ", " : "");
-        print "</i>";
-      }
+      print "## Серверы обхода";
       print "";
+      print "| сервер | пинг | |";
+      print "|---|---:|---|";
+      for (i = 1; i <= a; i++)
+        printf "| %s | %d мс | %s |\n", alive[i], pings[i], (active[i] ? "сейчас" : (pings[i] < 250 ? "быстрый" : ""));
+      print "";
+      if (d > 0) {
+        printf "<details><summary>Молчат: %d</summary>\n\n", d;
+        for (i = 1; i <= d; i++) printf "%s%s", dead[i], (i < d ? ", " : "\n");
+        print "";
+        print "</details>";
+        print "";
+      }
       print "Кнопкой ниже — закрепить сервер.";
 
-      # клавиатура: по три кнопки в ряд, в порядке возрастания пинга
       kb = "{\"inline_keyboard\":[";
       row = ""; rows = ""; cnt = 0;
       for (i = 1; i <= a; i++) {
@@ -146,77 +200,273 @@ fmt_nodes() { # печатает текст; JSON кнопок кладёт в /
         if (cnt % 3 == 0) { rows = rows (rows == "" ? "" : ",") "[" row "]"; row = "" }
       }
       if (row != "") rows = rows (rows == "" ? "" : ",") "[" row "]";
-      extra = "[{\"text\":\"⚡ Самый быстрый\",\"callback_data\":\"act:best\"},{\"text\":\"🎲 Автовыбор\",\"callback_data\":\"act:auto\"}]";
-      rows = rows (rows == "" ? "" : ",") extra;
-      kb = kb rows "]}";
-      print kb > "/tmp/rctl-bot.kb";
+      rows = rows (rows == "" ? "" : ",") "[{\"text\":\"⚡ Самый быстрый\",\"callback_data\":\"act:best\"},{\"text\":\"🎲 Автовыбор\",\"callback_data\":\"act:auto\"}]";
+      print kb rows "]}" > "/tmp/rctl-bot.kb";
     }'
 }
 
-fmt_plain() { # заголовок + вывод команды моноширинно
-  printf '<b>%s</b>\n\n<pre>%s</pre>\n' "$1" "$(printf '%s' "$2" | esc)"
+md_block() { # заголовок + вывод команды блоком кода
+  printf '## %s\n\n```\n%s\n```\n' "$1" "$2"
 }
 
-HELP='<b>Пульт к роутеру</b>
+md_family() {
+  echo "## Кто имеет доступ"
+  echo ""
+  echo "| кто | id | права |"
+  echo "|---|---|---|"
+  for o in $(owners); do echo "| владелец | \`$o\` | всё |"; done
+  [ -f "$ACL" ] && awk -F: '{ printf "| %s | `%s` | %s |\n", ($3 == "" ? "без имени" : $3), $1, ($2 == "family" ? "статус, починить, ютуб, серверы" : $2) }' "$ACL"
+  echo ""
+  echo "Убрать: /kick ID"
+}
 
-<b>Статус</b> — что работает прямо сейчас
-<b>Починить</b> — поднять упавшее, уйти с мёртвого сервера
-<b>Ютуб</b> — почему не идёт видео
-<b>Серверы</b> — таблица с пингом и кнопки выбора
+HELP_OWNER='## Пульт к роутеру
 
-Ещё: /use ИМЯ, /best, /auto, /logs, /info'
+| кнопка | что делает |
+|---|---|
+| Статус | что работает прямо сейчас |
+| Починить | поднять упавшее, уйти с мёртвого сервера |
+| Ютуб | почему не идёт видео |
+| Серверы | таблица с пингом и выбор кнопкой |
 
-handle() { # handle CHAT ТЕКСТ
-  chat=$1; text=$2
+**Команды владельца**
+
+`/tune` — подобрать стратегию zapret под домен
+`/family` — кто имеет доступ, `/kick ID` — отобрать
+`/logs`, `/info`, `/use ИМЯ`, `/best`, `/auto`'
+
+HELP_FAMILY='## Пульт к роутеру
+
+| кнопка | что делает |
+|---|---|
+| Статус | что работает прямо сейчас |
+| Починить | если интернет капризничает — жми это |
+| Ютуб | проверить, почему не идёт видео |
+| Серверы | список и выбор сервера |
+
+Если после «Починить» лучше не стало — напиши хозяину роутера.'
+
+# ---------- долгие операции с прогрессом --------------------------------------
+
+# Показывает «идёт работа», обновляя одно сообщение, пока команда считается.
+with_progress() { # with_progress CHAT ЗАГОЛОВОК КОМАНДА…
+  chat=$1; title=$2; shift 2
+  mid=$(send_html "$chat" "⏳ <b>$title</b>
+<i>началось…</i>")
+  out=/tmp/rctl-bot.out.$$
+  ( "$@" > "$out" 2>&1; echo done > "$out.flag" ) &
+  worker=$!
+  i=0
+  while kill -0 "$worker" 2>/dev/null; do
+    sleep 3
+    i=$((i + 3))
+    last=$(tail -1 "$out" 2>/dev/null | esc_html | head -c 120)
+    [ -n "$mid" ] && edit_html "$chat" "$mid" "⏳ <b>$title</b>
+идёт ${i}с
+<code>${last:-подождём…}</code>"
+    [ "$i" -gt 900 ] && break
+  done
+  wait "$worker" 2>/dev/null
+  res=$(cat "$out" 2>/dev/null)
+  rm -f "$out" "$out.flag"
+  [ -n "$mid" ] && tg deleteMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid"
+  rich "$chat" "$(md_block "$title" "$res")"
+}
+
+# Подбор стратегии: предупреждение -> запуск -> живой прогресс -> кнопки применения
+tune_start() { # tune_start CHAT УРОВЕНЬ
+  chat=$1; level=$2
+  out=$($TUNE start youtube.com "$level" 2>&1)
+  case "$out" in
+    *"уже идёт"*) rich "$chat" "$(md_block 'Подбор стратегии' "$out")"; return ;;
+  esac
+  mid=$(send_html "$chat" "⏳ <b>Подбираю стратегию</b>
+<i>обход сейчас отключён, вернётся сам</i>")
+  (
+    i=0
+    while :; do
+      sleep 15
+      i=$((i + 15))
+      st=$($TUNE status 2>&1)
+      phase=$(printf '%s' "$st" | sed -n 's/^фаза: //p')
+      cur=$(printf '%s' "$st" | sed -n 's/^сейчас: //p' | esc_html | head -c 100)
+      found=$(printf '%s' "$st" | sed -n 's/^найдено рабочих: //p')
+      [ -n "$mid" ] && edit_html "$chat" "$mid" "⏳ <b>Подбираю стратегию</b>
+фаза: ${phase:-?} · идёт $((i / 60)) мин
+найдено рабочих: ${found:-0}
+<code>${cur:-…}</code>
+<i>обход отключён на время подбора</i>"
+      case "$phase" in готово|прерван|оборвался*) break ;; esac
+      [ "$i" -gt 2700 ] && break
+    done
+    [ -n "$mid" ] && tg deleteMessage -o /dev/null --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$mid"
+    res=$($TUNE result 2>&1 | head -8)
+    if [ -z "$res" ]; then
+      rich "$chat" "## Подбор закончен
+
+Рабочих стратегий не нашлось. Либо блокировки сейчас нет вовсе, либо нужен уровень \`force\` — он дольше, но перебирает всё.
+
+Запустить: /tune force"
+    else
+      printf '%s\n' "$res" > /tmp/rctl-bot.tune
+      md="## Подбор закончен
+
+Нашлось рабочих: $(printf '%s\n' "$res" | grep -c .)
+
+| № | стратегия |
+|---:|---|
+"
+      n=0
+      kb='{"inline_keyboard":['
+      first=1
+      while IFS= read -r line; do
+        n=$((n + 1))
+        md="$md| $n | \`$line\` |
+"
+        [ "$first" = 1 ] || kb="$kb,"
+        kb="$kb[{\"text\":\"Применить №$n\",\"callback_data\":\"tune:$n\"}]"
+        first=0
+      done <<EOT
+$res
+EOT
+      kb="$kb]}"
+      md="$md
+Применение правит только строку TCP 443, конфиг бэкапится, при ухудшении откат автоматический."
+      rich "$chat" "$md" "$kb"
+    fi
+  ) &
+}
+
+# ---------- обработчики -------------------------------------------------------
+
+handle() { # handle CHAT РОЛЬ ТЕКСТ
+  chat=$1; role=$2; text=$3
   case "$text" in
-    /start|/help|help|Помощь)  send "$chat" "$HELP" ;;
-    /status|Статус|статус)     send "$chat" "$(fmt_status)" ;;
-    /fix|Починить|починить)    send "$chat" "$(fmt_plain 'Починка' "$($RCTL fix 2>&1)")" ;;
-    /yt|/yttest|Ютуб|ютуб)     send "$chat" "$(fmt_plain 'Тест ютуба' "$($RCTL yttest 2>&1)")" ;;
+    /start|/help|help|Помощь)
+      [ "$role" = owner ] && rich "$chat" "$HELP_OWNER" || rich "$chat" "$HELP_FAMILY" ;;
+    /status|Статус|статус)  rich "$chat" "$(md_status)" ;;
+    /fix|Починить|починить)  with_progress "$chat" "Починка" $RCTL fix ;;
+    /yt|/yttest|Ютуб|ютуб)   with_progress "$chat" "Тест ютуба" $RCTL yttest ;;
     /nodes|Серверы|серверы)
-      t=$(fmt_nodes)
-      send "$chat" "$t" "$(cat /tmp/rctl-bot.kb 2>/dev/null || echo "$KB")" ;;
-    /best|Лучший)              send "$chat" "$(fmt_plain 'Выбор быстрейшего' "$($RCTL nodes best 2>&1)")" ;;
-    /auto)                     send "$chat" "$(fmt_plain 'Автовыбор' "$($RCTL nodes auto 2>&1)")" ;;
-    /logs)                     send "$chat" "$(fmt_plain 'Лог прокси' "$($RCTL logs sing-box 2>&1 | tail -25)")" ;;
-    /info)                     send "$chat" "$(fmt_plain 'Система' "$($RCTL info 2>&1)")" ;;
+      m=$(md_nodes)
+      rich "$chat" "$m" "$(cat /tmp/rctl-bot.kb 2>/dev/null)" ;;
+    /best|Лучший)  with_progress "$chat" "Выбор быстрейшего" $RCTL nodes best ;;
+    /auto)         with_progress "$chat" "Автовыбор" $RCTL nodes auto ;;
     /use\ *)
       n=${text#/use }
       if echo "$n" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
-        send "$chat" "$(fmt_plain 'Смена сервера' "$($RCTL nodes use "$n" 2>&1)")"
+        with_progress "$chat" "Смена сервера" $RCTL nodes use "$n"
       else
-        send "$chat" "Кривое имя сервера."
+        rich "$chat" "Кривое имя сервера."
       fi ;;
-    *) send "$chat" "Не понял. Кнопки внизу или /help" ;;
+
+    # --- дальше только владелец ---
+    /logs)  [ "$role" = owner ] && with_progress "$chat" "Лог прокси" $RCTL logs sing-box || rich "$chat" "Это только для хозяина роутера." ;;
+    /info)  [ "$role" = owner ] && with_progress "$chat" "Система" $RCTL info || rich "$chat" "Это только для хозяина роутера." ;;
+    /family)
+      [ "$role" = owner ] && rich "$chat" "$(md_family)" || rich "$chat" "Это только для хозяина роутера." ;;
+    /kick\ *)
+      if [ "$role" = owner ]; then
+        id=${text#/kick }
+        if echo "$id" | grep -qE '^-?[0-9]+$'; then acl_del "$id"; rich "$chat" "Доступ у \`$id\` отобран."
+        else rich "$chat" "Нужен числовой id."; fi
+      else rich "$chat" "Это только для хозяина роутера."; fi ;;
+    /tune|/tune\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера."; return; fi
+      lvl=${text#/tune}; lvl=${lvl# }
+      case "$lvl" in
+        quick|standard|force) tune_start "$chat" "$lvl" ;;
+        stop) rich "$chat" "$(md_block 'Подбор' "$($TUNE stop 2>&1)")" ;;
+        status) rich "$chat" "$(md_block 'Подбор' "$($TUNE status 2>&1)")" ;;
+        *)
+          rich "$chat" "## Подбор стратегии zapret
+
+Гоняет штатный \`blockcheck\` и ищет параметры обхода, которые сейчас пробивают блокировку.
+
+**Важно:** на время подбора обход отключается — blockcheck поднимает собственный nfqws. У всех дома интернет будет как без обхода. Вернётся само.
+
+| уровень | сколько ждать |
+|---|---|
+| быстрый | пара минут, берёт первое рабочее |
+| обычный | 5–15 минут, ищет получше |
+| полный | долго, перебирает всё |" \
+          '{"inline_keyboard":[[{"text":"⚡ Быстрый","callback_data":"tunelvl:quick"},{"text":"⚖ Обычный","callback_data":"tunelvl:standard"}],[{"text":"🐢 Полный","callback_data":"tunelvl:force"}]]}' ;;
+      esac ;;
+    *) rich "$chat" "Не понял. Кнопки внизу или /help" ;;
   esac
 }
 
-handle_cb() { # handle_cb CHAT CALLBACK_ID DATA
-  chat=$1; cbid=$2; data=$3
+handle_cb() { # handle_cb CHAT РОЛЬ CBID DATA
+  chat=$1; role=$2; cbid=$3; data=$4
   case "$data" in
     use:*)
       n=${data#use:}
       if echo "$n" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
-        out=$($RCTL nodes use "$n" 2>&1)
-        answer "$cbid" "$(printf '%s' "$out" | head -c 180)"
-        send "$chat" "$(fmt_plain "Сервер → $n" "$out")"
-      else
-        answer "$cbid" "кривое имя"
-      fi ;;
-    act:best)
-      answer "$cbid" "меряю…"
-      send "$chat" "$(fmt_plain 'Выбор быстрейшего' "$($RCTL nodes best 2>&1)")" ;;
-    act:auto)
-      answer "$cbid" "переключаю…"
-      send "$chat" "$(fmt_plain 'Автовыбор' "$($RCTL nodes auto 2>&1)")" ;;
+        answer "$cbid" "переключаю на $n…"
+        with_progress "$chat" "Сервер → $n" $RCTL nodes use "$n"
+      else answer "$cbid" "кривое имя"; fi ;;
+    act:best) answer "$cbid" "меряю…"; with_progress "$chat" "Выбор быстрейшего" $RCTL nodes best ;;
+    act:auto) answer "$cbid" "переключаю…"; with_progress "$chat" "Автовыбор" $RCTL nodes auto ;;
+    tunelvl:*)
+      [ "$role" = owner ] || { answer "$cbid" "только хозяину"; return; }
+      answer "$cbid" "запускаю подбор"
+      tune_start "$chat" "${data#tunelvl:}" ;;
+    tune:*)
+      [ "$role" = owner ] || { answer "$cbid" "только хозяину"; return; }
+      n=${data#tune:}
+      s=$(sed -n "${n}p" /tmp/rctl-bot.tune 2>/dev/null)
+      if [ -n "$s" ]; then
+        answer "$cbid" "применяю…"
+        with_progress "$chat" "Применение стратегии" $TUNE apply "$s"
+      else answer "$cbid" "стратегия потерялась, запусти подбор заново"; fi ;;
+    grant:*)
+      [ "$role" = owner ] || { answer "$cbid" "только хозяину"; return; }
+      id=${data#grant:}
+      nm=$(cat "/tmp/rctl-bot.pending.$id" 2>/dev/null || echo "без имени")
+      acl_add "$id" family "$nm"
+      rm -f "/tmp/rctl-bot.pending.$id"
+      answer "$cbid" "пустил"
+      rich "$chat" "\`$id\` ($nm) теперь может пользоваться ботом."
+      rich "$id" "$HELP_FAMILY" ;;
+    deny:*)
+      [ "$role" = owner ] || { answer "$cbid" "только хозяину"; return; }
+      id=${data#deny:}
+      rm -f "/tmp/rctl-bot.pending.$id"
+      answer "$cbid" "отказал" ;;
     *) answer "$cbid" "неизвестная кнопка" ;;
   esac
 }
 
+# чужак постучался — спрашиваем владельца
+ask_owner() { # ask_owner ID ИМЯ ТЕКСТ
+  echo "$2" > "/tmp/rctl-bot.pending.$1"
+  for o in $(owners); do
+    rich "$o" "## Стучится незнакомец
+
+**Имя:** $2
+**id:** \`$1\`
+**Написал:** $3
+
+Пустить — получит статус, починку, тест ютуба и выбор сервера. Настройки и стратегии останутся только тебе." \
+      "{\"inline_keyboard\":[[{\"text\":\"✅ Пустить\",\"callback_data\":\"grant:$1\"},{\"text\":\"⛔ Отказать\",\"callback_data\":\"deny:$1\"}]]}"
+  done
+}
+
+# ---------- основной цикл -----------------------------------------------------
+
+# отладочный режим: rctl-bot selftest CHAT_ID — шлёт пример оформления и выходит,
+# не поднимая основной цикл (иначе будет драка за getUpdates со службой)
+case "${1:-}" in
+  selftest)
+    [ -n "${2:-}" ] || { echo "rctl-bot selftest CHAT_ID"; exit 1; }
+    rich "$2" "$(md_status)" && echo "статус отправлен"
+    rich "$2" "$(md_nodes)" "$(cat /tmp/rctl-bot.kb 2>/dev/null)" && echo "серверы отправлены"
+    exit 0 ;;
+esac
+
 log "старт (proxy $BOT_PROXY)"
 offset=$(cat "$OFFSET_FILE" 2>/dev/null || echo 0)
 
-# на первом запуске пропускаем всё, что накопилось, пока бот лежал
 if [ "$offset" = 0 ]; then
   r=$(tg getUpdates --data-urlencode "offset=-1" --data-urlencode "timeout=0")
   last=$(printf '%s' "$r" | tr -d '\n\r' | sed -n 's/.*"update_id":\([0-9]*\).*/\1/p' | tail -1)
@@ -243,17 +493,18 @@ while :; do
     echo $((uid + 1)) > "$OFFSET_FILE"
     chat=$(printf '%s' "$u" | sed -n 's/.*"chat":{"id":\(-\{0,1\}[0-9]*\).*/\1/p')
     [ -n "$chat" ] || continue
+    role=$(role_of "$chat")
 
     case "$u" in
       *'"callback_query"'*)
         cbid=$(printf '%s' "$u" | sed -n 's/.*"callback_query":{"id":"\([^"]*\)".*/\1/p')
         data=$(printf '%s' "$u" | sed -n 's/.*"data":"\([^"]*\)".*/\1/p' | unesc)
         [ -n "$cbid" ] && [ -n "$data" ] || { log "пропущен callback $uid"; continue; }
-        if allowed "$chat"; then
-          log "кнопка от $chat: $data"
-          handle_cb "$chat" "$cbid" "$data"
+        if [ -n "$role" ]; then
+          log "кнопка от $chat ($role): $data"
+          handle_cb "$chat" "$role" "$cbid" "$data"
         else
-          answer "$cbid" "не для тебя"
+          answer "$cbid" "нет доступа"
         fi ;;
       *)
         text=$(printf '%s' "$u" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' | unesc)
@@ -261,14 +512,18 @@ while :; do
           log "пропущен апдейт $uid: $(printf '%s' "$u" | head -c 200)"
           continue
         fi
-        if allowed "$chat"; then
-          log "команда от $chat: $text"
-          handle "$chat" "$text"
+        if [ -n "$role" ]; then
+          log "команда от $chat ($role): $text"
+          handle "$chat" "$role" "$text"
         else
-          log "чужой чат $chat: $text"
-          send "$chat" "Этот бот только для своих.
-Твой chat_id: <code>$chat</code>
-Впиши его в BOT_ALLOW в /etc/rctl-bot.conf и перезапусти: /etc/init.d/rctl-bot restart"
+          name=$(printf '%s' "$u" | sed -n 's/.*"from":{"id":[0-9]*,"is_bot":[a-z]*,"first_name":"\([^"]*\)".*/\1/p' | unesc)
+          log "чужой чат $chat ($name): $text"
+          if [ -f "/tmp/rctl-bot.pending.$chat" ]; then
+            send_html "$chat" "Запрос уже отправлен хозяину роутера, подожди."
+          else
+            ask_owner "$chat" "${name:-без имени}" "$text"
+            send_html "$chat" "Спросил хозяина роутера — если пустит, бот сам напишет."
+          fi
         fi ;;
     esac
   done
