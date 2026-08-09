@@ -67,8 +67,13 @@ $SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/
   || { echo "✗ zapret-tune не прошёл проверку синтаксиса"; exit 1; }
 
 say "заливаю панель"
-$SSH 'mkdir -p /www/panel/cgi-bin'
+$SSH 'mkdir -p /www/panel/cgi-bin /www/panel/fonts'
 $SSH 'cat > /www/panel/index.html' < "$DIR/router/index.html"
+# шрифт панели (Onest, переменный, кириллица+латиница ~46 КБ на двоих)
+for f in "$DIR"/router/fonts/*.woff2; do
+  [ -f "$f" ] || continue
+  $SSH "cat > /www/panel/fonts/$(basename "$f")" < "$f"
+done
 $SSH 'cat > /www/panel/cgi-bin/api.new' < "$DIR/router/api"
 $SSH 'sh -n /www/panel/cgi-bin/api.new && mv /www/panel/cgi-bin/api.new /www/panel/cgi-bin/api && chmod +x /www/panel/cgi-bin/api' \
   || { echo "✗ CGI не прошёл проверку синтаксиса"; exit 1; }

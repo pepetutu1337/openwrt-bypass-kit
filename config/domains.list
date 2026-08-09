@@ -60,7 +60,11 @@ spotify.com
 scdn.co
 spotifycdn.com
 twitch.tv
-ttvnw.net
+# только выдача плейлиста: она решает набор качеств (с российского адреса
+# твич отдаёт максимум 720p60, с европейского появляется 1080p60).
+# Сами сегменты видео (*.hls.ttvnw.net, *.playlist.ttvnw.net) НЕ проксируем:
+# напрямую они идут быстрее (замер: 2.2 МБ/с против 1.7 МБ/с через ноду).
+usher.ttvnw.net
 jtvnw.net
 netflix.com
 nflxvideo.net

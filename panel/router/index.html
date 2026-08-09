@@ -4,356 +4,313 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
-<title>Роутер</title>
+<meta name="description" content="Пульт домашнего роутера: состояние обхода, серверы, сайты через прокси.">
+<meta name="theme-color" content="#f4f4f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c0c0d" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23d1500f'/%3E%3Cpath d='M8 20h16M8 14h16' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Ccircle cx='11' cy='20' r='1.6' fill='%23d1500f'/%3E%3C/svg%3E">
+<title>Пульт роутера</title>
 <style>
 /* ============================================================
-   Оформление по принципам Apple: системный шрифт, трекинг под
-   размер, translucent-слои, критически задемпфированные кривые,
-   отклик на нажатие, светлая и тёмная темы, уважение к настройкам
-   доступности (reduced motion / transparency / contrast).
+   Пульт домашнего роутера. Не лендинг: приборная панель, которой
+   пользуются родители, пока хозяин в отъезде. Отсюда правила.
 
-   Правило вёрстки этой страницы: НИЧТО не шире экрана. Любой
-   длинный вывод скроллится внутри своего блока, наружу не лезет.
+   ТИПОГРАФИКА  Onest (переменный, лежит рядом), вес 400 и 600.
+                Иерархия строится весом и размером, не капслоком.
+   ЦВЕТ         одна нейтральная серая семья (zinc) + ОДИН акцент
+                (жжёный оранжевый). Зелёный и красный только там,
+                где это настоящее состояние службы, а не украшение.
+   ФОРМА        радиусы: контейнер 16, контрол 10, капсула статуса
+                полная. Другого радиуса на странице нет.
+   ДВИЖЕНИЕ     критически задемпфированная кривая, нажатие 100 мс,
+                всё на transform/opacity.
+   ШИРИНА       ничто не шире экрана: длинный вывод скроллится
+                внутри своего блока.
    ============================================================ */
 
+@font-face{
+  font-family:Onest; font-style:normal; font-weight:400 700; font-display:swap;
+  src:url(fonts/onest-cyr.woff2) format("woff2");
+  unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+@font-face{
+  font-family:Onest; font-style:normal; font-weight:400 700; font-display:swap;
+  src:url(fonts/onest-latin.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+2000-206F,U+2122,U+2191,U+2193,U+2212,U+2215;
+}
+
 :root{
-  --bg:#f5f5f7;
-  --surface:255,255,255;
-  --surface-a:0.74;
-  --tx:#1d1d1f;
-  --tx2:#6e6e73;
-  --tx3:#8e8e93;
-  --line:0,0,0;
-  --line-a:0.09;
-  --accent:#0071e3;
-  --ok:#34c759;
-  --warn:#ff9500;
-  --bad:#ff3b30;
-  --shadow-s:0 1px 2px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.05);
-  --shadow-l:0 2px 6px rgba(0,0,0,.07), 0 18px 44px rgba(0,0,0,.10);
-  /* критически задемпфированная кривая: без перелёта, спокойный приход */
+  --bg:#f4f4f5;
+  --surface:#fff;
+  --surface-2:#fafafa;
+  --tx:#18181b;
+  --tx2:#52525b;
+  --tx3:#8b8b93;
+  --line:rgba(24,24,27,.10);
+  --line-soft:rgba(24,24,27,.06);
+  --accent:#c1450d;          /* жжёный оранжевый, он же «требует внимания» */
+  --accent-soft:rgba(193,69,13,.10);
+  --ok:#2f7a4f;
+  --bad:#b3261e;
+  --ink:#18181b;             /* заливка главной кнопки */
+  --ink-tx:#fff;
+  --shadow:0 1px 2px rgba(24,24,27,.05), 0 10px 30px rgba(24,24,27,.06);
+  --r-box:16px;
+  --r-ctl:10px;
   --spring:cubic-bezier(0.32,0.72,0,1);
   --fast:180ms;
-  --base:400ms;
+  --base:380ms;
   --pad:1.25rem;
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --bg:#000;
-    --surface:28,28,30;
-    --surface-a:0.68;
-    --tx:#f5f5f7;
-    --tx2:#a1a1a6;
-    --tx3:#6e6e73;
-    --line:255,255,255;
-    --line-a:0.12;
-    --accent:#0a84ff;
-    --ok:#30d158;
-    --warn:#ff9f0a;
-    --bad:#ff453a;
-    --shadow-s:0 1px 2px rgba(0,0,0,.5);
-    --shadow-l:0 2px 8px rgba(0,0,0,.5), 0 20px 50px rgba(0,0,0,.45);
+    --bg:#0c0c0d;
+    --surface:#161618;
+    --surface-2:#1b1b1e;
+    --tx:#f4f4f5;
+    --tx2:#a1a1aa;
+    --tx3:#71717a;
+    --line:rgba(255,255,255,.12);
+    --line-soft:rgba(255,255,255,.07);
+    --accent:#ff7a3d;
+    --accent-soft:rgba(255,122,61,.14);
+    --ok:#4ea87a;
+    --bad:#e5584d;
+    --ink:#f4f4f5;
+    --ink-tx:#131315;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
   }
 }
 
 *{box-sizing:border-box}
 [hidden]{display:none!important}
-html{-webkit-text-size-adjust:100%;overflow-x:hidden}
+html{-webkit-text-size-adjust:100%;overflow-x:hidden;scroll-behavior:smooth}
 body{
-  margin:0;
-  overflow-x:hidden;
-  /* системный шрифт: в нём уже есть оптический размер и таблицы трекинга */
-  font:400 1.0625rem/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,Roboto,sans-serif;
+  margin:0;overflow-x:hidden;
+  font:400 1.0625rem/1.55 Onest,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
   color:var(--tx);
   background:var(--bg);
-  /* без background-attachment:fixed — на телефонах он даёт дёрганый фон */
-  background-image:
-    radial-gradient(70rem 40rem at 12% -10%, rgba(10,132,255,.10), transparent 60%),
-    radial-gradient(60rem 36rem at 92% 4%, rgba(52,199,89,.08), transparent 55%);
-  background-repeat:no-repeat;
   min-height:100dvh;
-  padding:0 var(--pad) calc(3.5rem + env(safe-area-inset-bottom));
+  padding:0 var(--pad) calc(4rem + env(safe-area-inset-bottom));
+  text-wrap:pretty;
 }
-.wrap{max-width:53rem;margin:0 auto}
+/* зерно: убирает цифровую стерильность плоской заливки */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.035;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.wrap{max-width:50rem;margin:0 auto;position:relative;z-index:1}
 
-/* ---------- шапка: translucent-слой, контент едет под ним ---------- */
+/* ---------- шапка ---------- */
 header{
   position:sticky;top:0;z-index:20;
-  margin:0 calc(-1 * var(--pad)) 1.5rem;
-  padding:.7rem var(--pad) .7rem;
+  margin:0 calc(-1 * var(--pad));
+  padding:.7rem var(--pad);
   padding-top:calc(.7rem + env(safe-area-inset-top));
-  display:flex;align-items:center;gap:.6rem;
-  background:rgba(var(--surface),.72);
-  backdrop-filter:blur(20px) saturate(180%);
-  -webkit-backdrop-filter:blur(20px) saturate(180%);
-  border-bottom:1px solid rgba(var(--line),var(--line-a));
+  display:flex;align-items:center;gap:.7rem;
+  background:color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter:blur(16px) saturate(150%);
+  -webkit-backdrop-filter:blur(16px) saturate(150%);
+  border-bottom:1px solid var(--line-soft);
 }
-header .mark{
-  width:.62rem;height:.62rem;border-radius:50%;
-  background:var(--tx3);flex:none;
-  transition:background var(--base) var(--spring),box-shadow var(--base) var(--spring);
-}
-header .mark.ok{background:var(--ok);box-shadow:0 0 0 .22rem rgba(52,199,89,.18)}
-header .mark.warn{background:var(--warn);box-shadow:0 0 0 .22rem rgba(255,149,10,.18)}
-header .mark.bad{background:var(--bad);box-shadow:0 0 0 .22rem rgba(255,59,48,.18)}
-header .who{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.25}
+header .who{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.3}
 header h1{
-  font-size:1rem;font-weight:600;margin:0;
-  letter-spacing:-.01em;
+  font-size:.9375rem;font-weight:600;margin:0;letter-spacing:-.01em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-header .lan{color:var(--tx3);font-size:.8125rem;font-variant-numeric:tabular-nums}
-/* активный сервер виден всегда — за ним и приходят чаще всего */
+header .lan{color:var(--tx3);font-size:.78rem;font-variant-numeric:tabular-nums}
 #hnode{
-  display:inline-flex;align-items:center;gap:.35rem;flex:none;max-width:9.5rem;
-  background:rgba(var(--line),.06);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:999px;padding:.3rem .6rem;
-  font-size:.875rem;font-weight:600;letter-spacing:-.005em;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  cursor:pointer;
-  transition:transform 100ms ease-out,background var(--fast) var(--spring);
+  display:inline-flex;align-items:center;gap:.35rem;flex:none;max-width:9rem;
+  border:1px solid var(--line);border-radius:999px;padding:.28rem .6rem .28rem .5rem;
+  font-size:.84rem;font-weight:600;letter-spacing:-.005em;background:var(--surface);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;
+  transition:transform 100ms ease-out,border-color var(--fast) var(--spring);
 }
 #hnode:active{transform:scale(.96)}
 #hnode.upd{animation:pop var(--base) var(--spring)}
-@keyframes pop{from{transform:scale(.9);opacity:.5}to{transform:none;opacity:1}}
+@keyframes pop{from{transform:scale(.92);opacity:.4}to{transform:none;opacity:1}}
 
-/* ---------- герой ---------- */
-.hero{padding:.25rem 0 1.5rem}
-.eyebrow{
-  font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--tx3);margin:0 0 .55rem;
+/* ---------- состояние ---------- */
+.state{padding:2.25rem 0 1.75rem;display:grid;gap:.4rem}
+.state h2{
+  margin:0;font-weight:600;
+  font-size:clamp(2.1rem,8vw,3rem);line-height:1.05;letter-spacing:-.035em;
+  text-wrap:balance;
 }
-.hero h2{
-  margin:0 0 .45rem;
-  font-size:clamp(2rem,7vw,3.25rem);
-  line-height:1.04;                      /* крупному тексту — плотный интерлиньяж */
-  letter-spacing:-.028em;                /* и отрицательный трекинг */
-  font-weight:650;
+.state p{margin:0;color:var(--tx2);max-width:34ch}
+.state p b{color:var(--tx);font-weight:600}
+.state .meter{
+  display:flex;align-items:flex-start;gap:.5rem;
+  font-size:.9rem;color:var(--tx2);font-variant-numeric:tabular-nums;
 }
-.hero p{margin:0;color:var(--tx2);font-size:1.0625rem;max-width:34rem}
-.hero p b{color:var(--tx);font-weight:600}
-
-.actions{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin:1.5rem 0 1rem}
+.state .meter .dot{width:.45rem;height:.45rem;border-radius:50%;background:var(--tx3);
+                   flex:none;margin-top:.5em}
+.state .meter .dot.ok{background:var(--ok)}
+.state .meter .dot.warn{background:var(--accent)}
+.state .meter .dot.bad{background:var(--bad)}
+.acts{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-top:1rem}
 
 /* ---------- кнопки ---------- */
 button{
-  font:inherit;font-weight:500;
-  color:var(--tx);
-  background:rgba(var(--surface),.82);
-  backdrop-filter:blur(14px) saturate(160%);
-  -webkit-backdrop-filter:blur(14px) saturate(160%);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:.95rem;
-  padding:.7rem 1rem;
-  cursor:pointer;
-  max-width:100%;
-  box-shadow:var(--shadow-s);
-  /* отклик мгновенный: 100 мс на нажатие, спокойный возврат */
+  font:inherit;font-weight:500;color:var(--tx);
+  background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:.6rem .95rem;cursor:pointer;max-width:100%;
   transition:transform 100ms ease-out,background var(--fast) var(--spring),
-             border-color var(--fast) var(--spring),opacity var(--fast) linear;
-  touch-action:manipulation;
-  -webkit-tap-highlight-color:transparent;
+             border-color var(--fast) var(--spring),color var(--fast) var(--spring),
+             opacity var(--fast) linear;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
 }
-button:active:not(:disabled){transform:scale(.97)}
+button:hover:not(:disabled){border-color:color-mix(in srgb,var(--tx) 28%,transparent)}
+button:active:not(:disabled){transform:scale(.98)}
 button:disabled{opacity:.45;cursor:default}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button.primary{
-  background:var(--accent);color:#fff;border-color:transparent;
-  box-shadow:0 1px 2px rgba(0,0,0,.12), 0 10px 24px rgba(0,113,227,.28);
+  background:var(--ink);color:var(--ink-tx);border-color:transparent;font-weight:600;
+  box-shadow:var(--shadow);
 }
-button.big{padding:1.15rem 1rem;font-size:1.0625rem;font-weight:600;border-radius:1.15rem;letter-spacing:-.01em}
-button.sm{padding:.5rem .8rem;font-size:.9375rem;border-radius:.7rem}
-button.quiet{background:transparent;box-shadow:none}
+button.primary:hover:not(:disabled){background:color-mix(in srgb,var(--ink) 88%,var(--accent))}
+button.big{padding:.95rem 1.6rem;font-size:1.0625rem;letter-spacing:-.01em}
+button.link{
+  background:none;border:none;padding:.6rem .2rem;color:var(--accent);font-weight:600;
+  box-shadow:none;
+}
+button.link:hover:not(:disabled){text-decoration:underline;text-underline-offset:3px}
 button.danger{color:var(--bad)}
-/* кнопка, которая прямо сейчас работает */
 button.busy{position:relative;color:transparent!important}
 button.busy::after{
-  content:"";position:absolute;inset:0;margin:auto;
-  width:1.05rem;height:1.05rem;border-radius:50%;
-  border:2px solid rgba(var(--line),.25);border-top-color:var(--accent);
+  content:"";position:absolute;inset:0;margin:auto;width:1rem;height:1rem;border-radius:50%;
+  border:2px solid color-mix(in srgb,var(--tx) 20%,transparent);border-top-color:var(--accent);
   animation:spin .7s linear infinite;
 }
-button.primary.busy::after{border-color:rgba(255,255,255,.35);border-top-color:#fff}
+button.primary.busy::after{border-color:rgba(127,127,127,.4);border-top-color:var(--ink-tx)}
+@keyframes spin{to{transform:rotate(360deg)}}
 
-/* ---------- капсулы состояния ---------- */
-.chips{display:flex;flex-wrap:wrap;gap:.5rem}
-.chip{
-  display:inline-flex;align-items:center;gap:.4rem;max-width:100%;
-  background:rgba(var(--surface),.7);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:999px;padding:.34rem .75rem;
-  font-size:.9375rem;color:var(--tx2);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  animation:rise var(--base) var(--spring) both;
-}
-.chip b{color:var(--tx);font-weight:600}
-.dot{width:.44rem;height:.44rem;border-radius:50%;background:var(--tx3);flex:none}
-.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
-@keyframes rise{from{opacity:0;transform:translateY(.4rem)}to{opacity:1;transform:none}}
-
-/* ---------- вкладки: сегмент-контрол с едущей плашкой ---------- */
+/* ---------- вкладки ---------- */
 .tabs{
   position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;
-  gap:.15rem;margin:0 0 1.1rem;padding:.25rem;
-  background:rgba(var(--line),.06);
-  border-radius:1rem;
-  overflow:hidden;
+  border-bottom:1px solid var(--line);margin-bottom:1.5rem;
 }
+.tabs button{
+  background:none;border:none;border-radius:0;box-shadow:none;
+  padding:.7rem .3rem .8rem;color:var(--tx3);font-weight:500;font-size:.95rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.tabs button:hover:not(:disabled){border-color:transparent;color:var(--tx2)}
+.tabs button[aria-selected="true"]{color:var(--tx);font-weight:600}
 .tabs .pill{
-  position:absolute;top:.25rem;bottom:.25rem;left:0;
-  border-radius:.8rem;
-  background:rgba(var(--surface),.95);
-  box-shadow:var(--shadow-s);
+  position:absolute;bottom:-1px;left:0;height:2px;background:var(--accent);border-radius:2px;
   transition:transform var(--base) var(--spring),width var(--base) var(--spring);
   pointer-events:none;
 }
-.tabs button{
-  position:relative;z-index:1;
-  background:none;border:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;
-  padding:.5rem .3rem;border-radius:.8rem;
-  font-size:.9375rem;font-weight:500;color:var(--tx2);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-}
-.tabs button[aria-selected="true"]{color:var(--tx);font-weight:600}
 
-/* ---------- индикатор работы ---------- */
+/* ---------- работа ---------- */
 #work{
-  display:none;align-items:center;gap:.7rem;
-  margin-bottom:1rem;padding:.68rem .9rem;
-  background:rgba(var(--surface),.82);
-  backdrop-filter:blur(18px) saturate(180%);
-  -webkit-backdrop-filter:blur(18px) saturate(180%);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:.9rem;box-shadow:var(--shadow-s);
-  font-size:.9375rem;
-  animation:materialize var(--base) var(--spring) both;
+  display:none;align-items:center;gap:.65rem;margin-bottom:1.25rem;
+  padding:.6rem .85rem;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--surface);font-size:.9rem;color:var(--tx2);
+  animation:rise var(--base) var(--spring) both;
 }
 #work.on{display:flex}
-/* стеклянная поверхность появляется как материал: размытие и масштаб вместе */
-@keyframes materialize{
-  from{opacity:0;transform:scale(.98);backdrop-filter:blur(0) saturate(100%)}
-  to{opacity:1;transform:none}
-}
 .spin{
-  width:.95rem;height:.95rem;border-radius:50%;flex:none;
-  border:2px solid rgba(var(--line),.18);border-top-color:var(--accent);
+  width:.9rem;height:.9rem;border-radius:50%;flex:none;
+  border:2px solid color-mix(in srgb,var(--tx) 15%,transparent);border-top-color:var(--accent);
   animation:spin .7s linear infinite;
 }
-@keyframes spin{to{transform:rotate(360deg)}}
-#worktx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx2)}
+#worktx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #worksec{color:var(--tx3);font-variant-numeric:tabular-nums;flex:none}
+@keyframes rise{from{opacity:0;transform:translateY(.35rem)}to{opacity:1;transform:none}}
 
-/* ---------- карточки ---------- */
-.card{
-  background:rgba(var(--surface),var(--surface-a));
-  backdrop-filter:blur(20px) saturate(180%);
-  -webkit-backdrop-filter:blur(20px) saturate(180%);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:1.15rem;
-  padding:1.2rem;
-  margin-bottom:.9rem;
-  box-shadow:var(--shadow-l);
+/* ---------- блоки ----------
+   Не карточка в карточке: группа отделяется заголовком и волосяной
+   линией, поверхность появляется только там, где нужна глубина. */
+.block{padding:0 0 1.75rem;margin-bottom:1.75rem;border-bottom:1px solid var(--line-soft)}
+.block:last-child{border-bottom:none;margin-bottom:0}
+.block > h3{
+  margin:0 0 .2rem;font-size:1.05rem;font-weight:600;letter-spacing:-.015em;
 }
-.card h3{
-  margin:0 0 .9rem;font-size:.8125rem;font-weight:600;
-  letter-spacing:.06em;text-transform:uppercase;color:var(--tx3);
-}
+.block > .sub{margin:0 0 1rem;color:var(--tx2);font-size:.95rem;max-width:60ch}
+.block > .sub b{color:var(--accent);font-weight:600}
 .row{display:flex;flex-wrap:wrap;gap:.5rem}
-.row > button{flex:1 1 auto;min-width:0}
-.note{color:var(--tx2);font-size:.9375rem;margin:0 0 .9rem;max-width:44rem;overflow-wrap:anywhere}
-.note b{color:var(--warn);font-weight:600}
-.note code,code{
-  font:.875rem ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
-  background:rgba(var(--line),.06);padding:.1rem .35rem;border-radius:.35rem;
+.row > button{flex:0 1 auto}
+.hint{color:var(--tx3);font-size:.875rem;margin:.9rem 0 0;max-width:60ch}
+code{
+  font:.86em ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:var(--line-soft);padding:.08em .35em;border-radius:6px;
 }
-.hint{color:var(--tx3);font-size:.875rem;margin:.7rem 0 0}
 
-/* ---------- поля ввода ---------- */
-.field{display:flex;gap:.5rem;flex-wrap:wrap}
-.field input{flex:1 1 100%}
-.field button{flex:1 1 auto}
+/* ---------- поле ввода ---------- */
+.field{display:grid;gap:.5rem}
+label.lb{font-size:.875rem;font-weight:600;color:var(--tx2)}
 input{
-  font:inherit;color:var(--tx);
-  background:rgba(var(--line),.05);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:.7rem;padding:.6rem .8rem;
-  flex:1 1 12rem;min-width:0;max-width:100%;
-  transition:border-color var(--fast) var(--spring),background var(--fast) var(--spring);
+  font:inherit;color:var(--tx);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:.65rem .8rem;width:100%;min-width:0;
+  transition:border-color var(--fast) var(--spring),box-shadow var(--fast) var(--spring);
 }
-input:focus{outline:none;border-color:var(--accent);background:rgba(var(--line),.02)}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 input::placeholder{color:var(--tx3)}
 
 /* ---------- серверы ---------- */
-.nodes{display:grid;gap:.35rem;margin-top:.85rem}
+.nodes{margin-top:1rem;border-top:1px solid var(--line-soft)}
 .node{
-  display:flex;align-items:center;gap:.65rem;
-  background:rgba(var(--line),.04);
-  border:1px solid transparent;
-  border-radius:.8rem;padding:.6rem .75rem;
-  cursor:pointer;min-width:0;
-  transition:transform 100ms ease-out,background var(--fast) var(--spring),border-color var(--fast) var(--spring);
+  display:flex;align-items:center;gap:.7rem;min-width:0;
+  padding:.7rem .3rem;border-bottom:1px solid var(--line-soft);
+  cursor:pointer;background:none;
+  transition:transform 100ms ease-out,background var(--fast) var(--spring);
   animation:rise var(--base) var(--spring) both;
 }
-.node:active{transform:scale(.985)}
-.node:hover{background:rgba(var(--line),.07)}
-.node.active{border-color:var(--accent);background:rgba(10,132,255,.10)}
-.node .flag{font-size:1.15rem;line-height:1;flex:none}
-.node .nm{flex:1;min-width:0;font-weight:500;letter-spacing:-.005em;
-          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.node .ms{color:var(--tx2);font-size:.9375rem;font-variant-numeric:tabular-nums;flex:none}
-/* молчащую ноду не блокируем: групповой замер врёт, дать нажать всё равно */
-.node.dead{opacity:.55}
+.node:hover{background:var(--surface-2)}
+.node:active{transform:scale(.995)}
+.node.active .nm{color:var(--accent)}
+.node .flag{font-size:1.1rem;line-height:1;flex:none;width:1.5rem;text-align:center}
+.node .nm{flex:1;min-width:0;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .bar{height:2px;border-radius:2px;background:var(--ok);flex:none;min-width:2px}
+.node .bar.mid{background:var(--accent)} .node .bar.slow{background:var(--bad)}
+.node .ms{color:var(--tx2);font-size:.9rem;font-variant-numeric:tabular-nums;flex:none;
+          width:4.2rem;text-align:right}
 .node.dead .ms{color:var(--tx3)}
-.track{width:3rem;height:.22rem;border-radius:999px;background:rgba(var(--line),.12);flex:none;overflow:hidden}
-.track i{display:block;height:100%;border-radius:999px;background:var(--ok);
-         transition:width var(--base) var(--spring)}
-.track i.mid{background:var(--warn)} .track i.slow{background:var(--bad)}
+.node.dead .flag{filter:grayscale(1);opacity:.6}
+/* скелет вместо крутилки: форма будущего списка видна сразу */
+.sk{display:flex;align-items:center;gap:.7rem;padding:.7rem .3rem;border-bottom:1px solid var(--line-soft)}
+.sk i{display:block;height:.7rem;border-radius:4px;background:var(--line-soft);
+      animation:pulse 1.4s ease-in-out infinite}
+.sk i.a{width:1.1rem} .sk i.b{flex:1} .sk i.c{width:2.6rem}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
 
 /* ---------- подбор стратегии ---------- */
 .tuneline{
   display:flex;align-items:center;gap:.6rem;min-width:0;
-  background:rgba(var(--line),.04);border-radius:.8rem;padding:.6rem .75rem;margin-bottom:.35rem;
+  padding:.6rem .3rem;border-bottom:1px solid var(--line-soft);
   animation:rise var(--base) var(--spring) both;
 }
-.tuneline code{flex:1;min-width:0;overflow-wrap:anywhere;background:transparent;padding:0}
+.tuneline code{flex:1;min-width:0;overflow-wrap:anywhere;background:none;padding:0;color:var(--tx2)}
 
 /* ---------- вывод ---------- */
-.outbox{margin-top:.4rem}
-.outbar{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem;flex-wrap:wrap}
+.outbox{margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--line)}
+.outbar{display:flex;gap:.5rem;align-items:center;margin-bottom:.7rem}
 .outbar input{flex:1 1 8rem}
 .outbar button{flex:none}
 pre{
-  background:rgba(var(--line),.05);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:1rem;padding:.9rem 1rem;margin:0;
-  overflow:auto;max-height:55vh;max-width:100%;
-  font:.8125rem/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
-  white-space:pre-wrap;overflow-wrap:anywhere;
-  animation:materialize var(--base) var(--spring) both;
+  margin:0;padding:1rem;border:1px solid var(--line);border-radius:var(--r-box);
+  background:var(--surface);overflow:auto;max-height:55vh;max-width:100%;
+  font:.8125rem/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;
   -webkit-overflow-scrolling:touch;
+  animation:rise var(--base) var(--spring) both;
 }
 pre:empty{display:none}
-.l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--warn)}
-.l-head{color:var(--accent);font-weight:600} .l-dim{color:var(--tx3)}
+.empty{color:var(--tx3);font-size:.9rem;margin:0}
+.l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--accent)}
+.l-head{color:var(--tx);font-weight:600} .l-dim{color:var(--tx3)}
 
 /* ---------- уведомление ---------- */
 #toast{
   position:fixed;left:50%;bottom:calc(1.2rem + env(safe-area-inset-bottom));z-index:40;
-  transform:translateX(-50%) translateY(150%);
-  background:rgba(var(--surface),.88);
-  backdrop-filter:blur(22px) saturate(180%);
-  -webkit-backdrop-filter:blur(22px) saturate(180%);
-  border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:1rem;padding:.72rem 1.1rem;
-  box-shadow:var(--shadow-l);max-width:min(92vw,30rem);
-  font-size:.9375rem;font-weight:500;
-  display:flex;align-items:center;gap:.55rem;
-  overflow-wrap:anywhere;
-  /* уходит тем же путём, каким пришло */
+  transform:translateX(-50%) translateY(160%);
+  background:var(--ink);color:var(--ink-tx);
+  border-radius:var(--r-ctl);padding:.7rem 1.05rem;box-shadow:var(--shadow);
+  max-width:min(92vw,30rem);font-size:.925rem;font-weight:500;
+  display:flex;align-items:center;gap:.5rem;overflow-wrap:anywhere;
   transition:transform var(--base) var(--spring),opacity var(--fast) linear;
   opacity:0;
 }
@@ -361,63 +318,61 @@ pre:empty{display:none}
 
 /* ---------- доступность ---------- */
 @media (prefers-reduced-motion: reduce){
-  *{animation-duration:.01ms !important;animation-iteration-count:1 !important;
-    transition-duration:120ms !important}
-  .spin,button.busy::after{animation:none;border-top-color:var(--accent);opacity:.6}
+  html{scroll-behavior:auto}
+  *{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:120ms!important}
+  .spin,button.busy::after,.sk i{animation:none;opacity:.6}
   button:active:not(:disabled){transform:none}
   #toast{transition:opacity 160ms linear;transform:translateX(-50%)}
   #toast:not(.show){opacity:0;pointer-events:none}
 }
 @media (prefers-reduced-transparency: reduce){
-  header,.card,button,.chip,#work,#toast,.tabs .pill{
-    background:rgb(var(--surface));backdrop-filter:none;-webkit-backdrop-filter:none;
-  }
-  button.primary{background:var(--accent)}
-  .tabs button{background:none}
+  header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media (prefers-contrast: more){
-  :root{--line-a:0.35;--tx2:var(--tx)}
-  .card,button,.chip{background:rgb(var(--surface))}
+  :root{--line:rgba(24,24,27,.4);--line-soft:rgba(24,24,27,.25);--tx2:var(--tx);--tx3:var(--tx2)}
+  body::before{display:none}
 }
 
 @media (max-width:34rem){
   :root{--pad:1rem}
   header .lan{display:none}
-  #hnode{max-width:7rem}
-  .actions{grid-template-columns:1fr}
-  .card{padding:1rem;border-radius:1rem}
-  .tabs button{font-size:.875rem;padding:.5rem .2rem}
-  pre{font-size:.75rem;padding:.8rem .85rem}
+  #hnode{max-width:7.5rem}
+  .state{padding:1.75rem 0 1.5rem}
+  .acts{gap:.5rem}
+  .acts button.big{flex:1 1 100%;text-align:center;padding:.85rem 1rem}
+  .tabs button{font-size:.875rem;padding:.65rem .15rem .75rem}
+  .node .ms{width:3.6rem}
+  .outbar{flex-wrap:wrap}
+  .outbar input{flex:1 1 100%}
+  pre{font-size:.75rem;padding:.85rem}
 }
 </style>
 </head>
 <body>
 
 <header>
-  <i class="mark" id="mark"></i>
   <span class="who">
-    <h1 id="title">Роутер</h1>
+    <h1 id="title">Пульт роутера</h1>
     <span class="lan" id="lan"></span>
   </span>
   <span id="hnode" hidden title="активный сервер обхода"></span>
 </header>
 
-<div class="wrap">
+<main class="wrap">
 
-  <section class="hero">
-    <p class="eyebrow" id="eyebrow">Состояние</p>
+  <section class="state" aria-live="polite">
     <h2 id="verdict">Проверяю</h2>
-    <p id="verdictsub">смотрю, что с обходом</p>
+    <p id="verdictsub">Смотрю, что с обходом.</p>
+    <p class="meter" id="meter"></p>
 
-    <div class="actions">
+    <div class="acts">
       <button class="big primary" data-act="fix">Починить</button>
       <button class="big" data-act="yttest">Проверить ютуб</button>
     </div>
-
-    <div class="chips" id="chips"></div>
   </section>
 
-  <nav class="tabs" id="tabs" role="tablist">
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Разделы пульта">
     <i class="pill" id="pill"></i>
     <button role="tab" data-tab="sites" aria-selected="true">Сайты</button>
     <button role="tab" data-tab="nodes" aria-selected="false">Серверы</button>
@@ -433,76 +388,82 @@ pre:empty{display:none}
 
   <!-- ---------------- САЙТЫ ---------------- -->
   <section data-panel="sites">
-    <div class="card">
-      <h3>Сайт через прокси</h3>
-      <p class="note">Впиши адрес — можно как есть, со <code>https://</code> и <code>www</code>,
-        разберётся сам. «Проверить» показывает, заведён ли сайт, куда он резолвится
-        и пойдёт ли реально через прокси.</p>
+    <div class="block">
+      <h3>Пустить сайт через прокси</h3>
+      <p class="sub">Адрес можно вставлять как есть, со схемой и <code>www</code>, лишнее срежется.
+        Кнопка «Проверить» показывает, заведён ли сайт, куда он резолвится и пойдёт ли реально
+        через прокси.</p>
       <div class="field">
+        <label class="lb" for="dom">Адрес сайта</label>
         <input id="dom" placeholder="militarysummary.com" autocapitalize="off" autocomplete="off"
                spellcheck="false" inputmode="url" enterkeyhint="go">
-        <button class="sm primary" data-act="domadd" data-src="dom">Добавить</button>
-        <button class="sm" data-act="domcheck" data-src="dom">Проверить</button>
-        <button class="sm danger" data-act="domrm" data-src="dom">Убрать</button>
       </div>
-      <p class="hint">Не открылось сразу — устройство держит старый DNS-ответ.
-        Выключи и включи Wi-Fi на нём. В браузере должен быть выключен Secure DNS (DoH),
-        иначе запрос идёт мимо роутера и правило не срабатывает.</p>
+      <div class="row" style="margin-top:.6rem">
+        <button class="primary" data-act="domadd" data-src="dom">Добавить</button>
+        <button data-act="domcheck" data-src="dom">Проверить</button>
+        <button class="danger" data-act="domrm" data-src="dom">Убрать</button>
+      </div>
+      <p class="hint">Не открылось сразу: устройство держит старый ответ DNS. Выключи и включи
+        на нём Wi-Fi. В браузере должен быть выключен Secure DNS (DoH), иначе запрос идёт мимо
+        роутера и правило не срабатывает.</p>
     </div>
 
-    <div class="card">
+    <div class="block">
       <h3>Списки</h3>
+      <p class="sub">Свой список правится руками. Geoblock обновляется сам, в нём сервисы,
+        ушедшие из России.</p>
       <div class="row">
-        <button class="sm" data-act="domains">Свои сайты</button>
-        <button class="sm" data-act="geolist">Список geoblock</button>
-        <button class="sm" data-act="geocount">Сколько в geoblock</button>
-        <button class="sm" data-act="geoupdate">Обновить geoblock</button>
+        <button data-act="domains">Свои сайты</button>
+        <button data-act="geolist">Список geoblock</button>
+        <button data-act="geocount">Сколько в geoblock</button>
+        <button data-act="geoupdate">Обновить geoblock</button>
       </div>
     </div>
   </section>
 
   <!-- ---------------- СЕРВЕРЫ ---------------- -->
   <section data-panel="nodes" hidden>
-    <div class="card">
+    <div class="block">
       <h3>Серверы обхода</h3>
+      <p class="sub">Нажми по строке, чтобы закрепить сервер. «Молчит» часто враньё группового
+        замера, такой сервер тоже можно попробовать. Полный замер идёт около минуты.</p>
       <div class="row">
-        <button class="sm primary" data-act="nodes">Обновить пинг</button>
-        <button class="sm" data-act="best">Выбрать лучший</button>
-        <button class="sm" data-act="auto">Автовыбор</button>
+        <button class="primary" data-act="nodes">Обновить пинг</button>
+        <button data-act="best">Выбрать лучший</button>
+        <button data-act="auto">Автовыбор</button>
       </div>
       <div class="nodes" id="nodelist"></div>
-      <p class="hint">Жми по строке, чтобы закрепить сервер. «Молчит» — это часто
-        враньё группового замера, такой сервер тоже можно попробовать.</p>
     </div>
   </section>
 
   <!-- ---------------- СЛУЖБЫ ---------------- -->
   <section data-panel="svc" hidden>
-    <div class="card">
+    <div class="block">
       <h3>Перезапуск</h3>
+      <p class="sub">Безопасно: службы поднимаются с теми же настройками.</p>
       <div class="row">
-        <button class="sm" data-act="restart" data-v="sing-box">Прокси</button>
-        <button class="sm" data-act="restart" data-v="zapret">Zapret</button>
-        <button class="sm" data-act="restart" data-v="dnsmasq">DNS</button>
-        <button class="sm" data-act="doctor">Полный чекап</button>
+        <button data-act="restart" data-v="sing-box">Прокси</button>
+        <button data-act="restart" data-v="zapret">Zapret</button>
+        <button data-act="restart" data-v="dnsmasq">DNS</button>
+        <button data-act="doctor">Полный чекап</button>
+        <button data-act="watchdog">Прогнать сторож</button>
       </div>
       <div class="row" style="margin-top:.5rem">
-        <button class="sm" data-act="quic" data-v="on">QUIC блок вкл</button>
-        <button class="sm" data-act="quic" data-v="off">QUIC блок выкл</button>
-        <button class="sm" data-act="watchdog">Прогнать сторож</button>
+        <button data-act="quic" data-v="on">Блок QUIC включить</button>
+        <button data-act="quic" data-v="off">Блок QUIC выключить</button>
       </div>
     </div>
 
-    <div class="card">
-      <h3>Стратегия обхода</h3>
-      <p class="note">Гоняет штатный <code>blockcheck</code> и ищет параметры, которые сейчас пробивают
-        блокировку. <b>На время подбора обход отключается</b> — у всех дома интернет будет
-        как без обхода. Вернётся само.</p>
+    <div class="block">
+      <h3>Подбор стратегии обхода</h3>
+      <p class="sub">Гоняет штатный <code>blockcheck</code> и ищет параметры, которые сейчас
+        пробивают блокировку. <b>На время подбора обход отключается</b>, у всех дома интернет
+        будет как без обхода. Вернётся само.</p>
       <div class="row">
-        <button class="sm" data-act="tunestart" data-v="quick">Быстрый · ~2 мин</button>
-        <button class="sm" data-act="tunestart" data-v="standard">Обычный · 5–15 мин</button>
-        <button class="sm" data-act="tunestart" data-v="force">Полный · долго</button>
-        <button class="sm danger" data-act="tunestop">Прервать</button>
+        <button data-act="tunestart" data-v="quick">Быстрый, около 2 минут</button>
+        <button data-act="tunestart" data-v="standard">Обычный, 5 до 15 минут</button>
+        <button data-act="tunestart" data-v="force">Полный, долго</button>
+        <button class="danger" data-act="tunestop">Прервать</button>
       </div>
       <div id="tunebox"></div>
     </div>
@@ -510,41 +471,50 @@ pre:empty{display:none}
 
   <!-- ---------------- ЕЩЁ ---------------- -->
   <section data-panel="more" hidden>
-    <div class="card">
+    <div class="block">
       <h3>Логи и система</h3>
+      <p class="sub">Последние строки журналов и сводка по железу.</p>
       <div class="row">
-        <button class="sm" data-act="logs" data-v="sing-box">Лог прокси</button>
-        <button class="sm" data-act="logs" data-v="zapret">Лог zapret</button>
-        <button class="sm" data-act="logs" data-v="dns">Лог DNS</button>
-        <button class="sm" data-act="info">Инфо о системе</button>
+        <button data-act="logs" data-v="sing-box">Лог прокси</button>
+        <button data-act="logs" data-v="zapret">Лог zapret</button>
+        <button data-act="logs" data-v="dns">Лог DNS</button>
+        <button data-act="info">Инфо о системе</button>
       </div>
-      <div class="row" style="margin-top:.5rem">
-        <button class="sm" data-act="tgcount">Telegram CIDR</button>
-        <button class="sm" data-act="tgupdate">Обновить Telegram CIDR</button>
+    </div>
+
+    <div class="block">
+      <h3>Диапазоны Telegram</h3>
+      <p class="sub">MTProto ходит по адресам, а не по именам, поэтому список сетей держится
+        отдельно и дополняется официальным списком с core.telegram.org.</p>
+      <div class="row">
+        <button data-act="tgcount">Сколько сетей</button>
+        <button data-act="tgupdate">Обновить список</button>
       </div>
     </div>
   </section>
 
   <div class="outbox">
     <div class="outbar" id="outbar" hidden>
-      <input id="find" placeholder="поиск по выводу" autocapitalize="off" autocomplete="off">
-      <button class="sm quiet" id="findclr">Сброс</button>
-      <button class="sm quiet" id="outclr">Очистить</button>
+      <input id="find" placeholder="поиск по выводу" autocapitalize="off" autocomplete="off"
+             aria-label="Поиск по выводу">
+      <button data-clear="find">Сброс</button>
+      <button data-clear="out">Очистить</button>
     </div>
+    <p class="empty" id="empty">Вывод команд появится здесь.</p>
     <pre id="out"></pre>
   </div>
-</div>
+</main>
 
-<div id="toast"></div>
+<div id="toast" role="status"></div>
 
 <script>
 const $ = s => document.querySelector(s);
-const out = $('#out'), mark = $('#mark');
+const out = $('#out');
 let rawOut = '';
-let userBusy = 0;        // сколько действий пользователя сейчас в работе
+let userBusy = 0;
 let curNode = '';
 
-/* флаг по имени ноды: страна — это имя без хвостовой цифры */
+/* флаг по имени ноды: страна это имя без хвостовой цифры */
 const FLAGS = {
   albania:'🇦🇱', al:'🇦🇱', cz:'🇨🇿', czech:'🇨🇿', finland:'🇫🇮', fi:'🇫🇮',
   france:'🇫🇷', fr:'🇫🇷', germany:'🇩🇪', de:'🇩🇪', india:'🇮🇳', in:'🇮🇳',
@@ -572,7 +542,13 @@ function toast(msg){
 }
 
 /* ---------- вывод ---------- */
-function paint(text){ rawOut = text; $('#outbar').hidden = !text.trim(); render(text); }
+function paint(text){
+  rawOut = text;
+  const has = !!text.trim();
+  $('#outbar').hidden = !has;
+  $('#empty').hidden = has;
+  render(text);
+}
 function render(text){
   const filter = $('#find').value.trim().toLowerCase();
   const frag = document.createDocumentFragment();
@@ -599,25 +575,25 @@ const WORKNAME = {
   tunestart:'запускаю подбор', tuneapply:'применяю стратегию', tunestop:'прерываю',
   logs:'читаю лог', info:'собираю инфо', restart:'перезапускаю службу',
   domadd:'добавляю сайт', domrm:'убираю сайт', domcheck:'разбираю сайт',
-  watchdog:'гоняю сторож', tgcount:'считаю диапазоны', tgupdate:'обновляю диапазоны',
+  watchdog:'гоняю сторож', tgcount:'считаю сети', tgupdate:'обновляю сети',
   quic:'переключаю QUIC', geocount:'считаю geoblock'
 };
-let workTimer = null, workT0 = 0;
+let workTimer = null;
 function workOn(act){
-  workT0 = Date.now();
+  const t0 = Date.now();
   $('#worktx').textContent = WORKNAME[act] || 'работаю';
   $('#worksec').textContent = '0 с';
   $('#work').classList.add('on');
   clearInterval(workTimer);
   workTimer = setInterval(() => {
-    $('#worksec').textContent = Math.round((Date.now() - workT0) / 1000) + ' с';
+    $('#worksec').textContent = Math.round((Date.now() - t0) / 1000) + ' с';
   }, 500);
 }
 function workOff(){ clearInterval(workTimer); $('#work').classList.remove('on'); }
 
 /* ---------- запрос к роутеру ----------
-   Фоновый опрос статуса НЕ блокирует действия пользователя: раньше общий
-   флаг busy глотал нажатия молча (кликаешь сервер — ничего не происходит). */
+   Фоновый опрос статуса не блокирует действия пользователя: общий флаг
+   busy раньше глотал нажатия молча. */
 async function api(act, v){
   const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
   const r = await fetch(u, {cache:'no-store'});
@@ -631,7 +607,7 @@ async function call(act, v, btn){
   try {
     return await api(act, v);
   } catch(e){
-    toast('Роутер не отвечает — проверь Wi-Fi');
+    toast('Роутер не отвечает. Проверь Wi-Fi');
     return null;
   } finally {
     userBusy--;
@@ -653,52 +629,40 @@ function setNodeChip(node){
 }
 
 function readStatus(t){
-  const chips = $('#chips');
-  const svc = [['sing-box','Прокси'],['zapret','Zapret'],['DoH','DNS'],['dnsmasq','dnsmasq']];
-  const frag = document.createDocumentFragment();
+  const svc = [['sing-box','прокси'],['zapret','zapret'],['DoH','DNS'],['dnsmasq','dnsmasq']];
   let down = [];
-  svc.forEach(([key, label], i) => {
+  svc.forEach(([key, label]) => {
     const m = t.match(new RegExp('^' + key + '\\s+(●|✗)', 'm'));
-    const ok = m && m[1] === '●';
-    if (m && !ok) down.push(label);
-    const el = document.createElement('span');
-    el.className = 'chip';
-    el.style.animationDelay = (i * 30) + 'ms';
-    el.innerHTML = `<i class="dot ${m ? (ok?'ok':'bad') : ''}"></i>${label}`;
-    frag.appendChild(el);
+    if (m && m[1] !== '●') down.push(label);
   });
   const node = (t.match(/активная нода:\s*(\S+)/) || [])[1];
   const dom = (t.match(/проксируемых доменов \(uci\):\s*(\d+)/) || [])[1];
   const geo = (t.match(/geoblock:\s*(\d+)/) || [])[1];
-  if (dom){
-    const el = document.createElement('span');
-    el.className = 'chip'; el.style.animationDelay = '120ms';
-    el.innerHTML = `<i class="dot ok"></i>сайтов ${dom}${geo ? ' + ' + geo : ''}`;
-    frag.appendChild(el);
-  }
-  chips.innerHTML = '';
-  chips.appendChild(frag);
   setNodeChip(node);
 
-  if (!down.length && node){
-    mark.className = 'mark ok';
-    $('#eyebrow').textContent = 'Состояние';
+  const meter = $('#meter');
+  const state = !down.length && node ? 'ok' : (down.length && down.length < 4 ? 'warn' : 'bad');
+  const svcTx = down.length ? 'Лежит: ' + down.join(', ') : 'Все службы в норме';
+  const cnt = dom ? `${dom} своих сайтов` + (geo ? `, ${geo} в geoblock` : '') : '';
+  meter.innerHTML = `<i class="dot ${state}"></i>${esc(svcTx)}` + (cnt ? ` · ${esc(cnt)}` : '');
+
+  if (state === 'ok'){
     $('#verdict').textContent = 'Всё работает';
     $('#verdictsub').innerHTML = `Обход включён, сервер ${flagOf(node)} <b>${esc(node)}</b>.`;
-  } else if (down.length && down.length < 4){
-    mark.className = 'mark warn';
-    $('#eyebrow').textContent = 'Требует внимания';
+  } else if (state === 'warn'){
     $('#verdict').textContent = 'Часть служб лежит';
-    $('#verdictsub').textContent = 'Не работает: ' + down.join(', ') + '. Нажми «Починить».';
+    $('#verdictsub').textContent = 'Нажми «Починить», обычно этого хватает.';
   } else {
-    mark.className = 'mark bad';
-    $('#eyebrow').textContent = 'Проблема';
     $('#verdict').textContent = 'Обход не работает';
-    $('#verdictsub').textContent = 'Нажми «Починить» — обычно этого хватает.';
+    $('#verdictsub').textContent = 'Нажми «Починить». Если не помогло, перезагрузи роутер.';
   }
 }
 
 /* ---------- серверы ---------- */
+function nodeSkeleton(){
+  $('#nodelist').innerHTML = Array.from({length:8}, () =>
+    '<div class="sk"><i class="a"></i><i class="b"></i><i class="c"></i></div>').join('');
+}
 function readNodes(t){
   const box = $('#nodelist');
   const rows = [];
@@ -706,7 +670,7 @@ function readNodes(t){
     const m = l.match(/^(=>|\s\s)\s*(\S+)\s+(\d+|-)\s*(ms)?/);
     if (m) rows.push({active: m[1] === '=>', name: m[2], ms: m[3] === '-' ? null : +m[3]});
   });
-  if (!rows.length) return;
+  if (!rows.length){ box.innerHTML = '<p class="hint">Список серверов пуст. Проверь, поднят ли прокси.</p>'; return; }
   const alive = rows.filter(r => r.ms).map(r => r.ms);
   const worst = alive.length ? Math.max(...alive) : 1;
   rows.sort((a, b) => (a.ms || 1e9) - (b.ms || 1e9));
@@ -715,14 +679,14 @@ function readNodes(t){
   rows.forEach((r, i) => {
     const el = document.createElement('div');
     el.className = 'node' + (r.active ? ' active' : '') + (r.ms ? '' : ' dead');
-    el.style.animationDelay = Math.min(i * 20, 300) + 'ms';
+    el.style.animationDelay = Math.min(i * 18, 260) + 'ms';
     const cls = !r.ms ? '' : r.ms < 250 ? '' : r.ms < 450 ? 'mid' : 'slow';
+    const w = r.ms ? Math.max(4, Math.round(56 * r.ms / worst)) : 0;
     el.innerHTML =
       `<span class="flag">${flagOf(r.name)}</span>` +
       `<span class="nm">${esc(r.name)}${r.active ? ' ✓' : ''}</span>` +
       (r.ms
-        ? `<span class="track"><i class="${cls}" style="width:${Math.max(10, Math.round(100 * r.ms / worst))}%"></i></span>
-           <span class="ms">${r.ms} мс</span>`
+        ? `<i class="bar ${cls}" style="width:${w}px"></i><span class="ms">${r.ms} мс</span>`
         : `<span class="ms">молчит</span>`);
     // кликается любая нода, включая «молчащую»: групповой замер регулярно врёт
     el.onclick = () => { if (r.name !== curNode) run('use', r.name); else toast('Этот сервер и так активен'); };
@@ -749,7 +713,7 @@ async function tuneTick(){
   $('#tunebox').innerHTML = `
     <div class="tuneline" style="margin-top:1rem">
       ${done ? '' : '<i class="spin"></i>'}
-      <code>${esc(phase)} · ${esc(el)} · проверок ${checks} · найдено ${found}</code>
+      <code>${esc(phase)} · ${esc(el)}, проверок ${checks}, найдено ${found}</code>
     </div>
     ${cur ? `<div class="tuneline"><code>${esc(cur)}</code></div>` : ''}`;
 
@@ -764,16 +728,16 @@ async function tuneResults(){
   const box = $('#tunebox');
   if (!t){
     box.insertAdjacentHTML('beforeend',
-      '<p class="note" style="margin-top:.8rem">Рабочих стратегий не нашлось. Либо блокировки сейчас нет, либо нужен полный уровень.</p>');
+      '<p class="hint">Рабочих стратегий не нашлось. Либо блокировки сейчас нет, либо нужен полный уровень.</p>');
     return;
   }
   const lines = t.split('\n').filter(Boolean);
   box.insertAdjacentHTML('beforeend',
-    `<p class="note" style="margin:.9rem 0 .6rem">Нашлось: ${lines.length}. Применяется только строка TCP 443,
-     конфиг бэкапится, при ухудшении откат автоматический.</p>` +
+    `<p class="hint" style="margin:.9rem 0 .4rem">Нашлось: ${lines.length}. Применяется только строка
+     TCP 443, конфиг бэкапится, при ухудшении откат автоматический.</p>` +
     lines.map((l, i) =>
       `<div class="tuneline"><code>${esc(l)}</code>
-       <button class="sm" data-tune="${i+1}">Применить</button></div>`).join(''));
+       <button data-tune="${i+1}">Применить</button></div>`).join(''));
   box.querySelectorAll('button[data-tune]').forEach(b => {
     b.onclick = () => run('tuneapply', b.dataset.tune, b);
   });
@@ -781,6 +745,7 @@ async function tuneResults(){
 
 /* ---------- запуск действий ---------- */
 async function run(act, v, btn){
+  if (act === 'nodes') nodeSkeleton();
   const t = await call(act, v, btn);
   if (t === null) return;
   paint(t);
@@ -796,15 +761,15 @@ async function run(act, v, btn){
     if (/^✓/m.test(t)) toast('Сервер переключён' + (act === 'use' && v ? ': ' + v : ''));
     else toast(first || 'Не переключилось');
     await refresh();
-    if (act === 'use' && curNode !== v) toast('Роутер оставил сервер ' + curNode + ' — этот не поднялся');
+    if (act === 'use' && curNode !== v) toast('Роутер оставил сервер ' + curNode + ', этот не поднялся');
   }
   if (act === 'yttest')
-    toast(/ИТОГ: ютуб уехал/.test(t) ? 'Ютуб уехал в прокси — жми «Починить»' : 'С роутера ютуб в порядке');
+    toast(/ИТОГ: ютуб уехал/.test(t) ? 'Ютуб уехал в прокси, жми «Починить»' : 'С роутера ютуб в порядке');
   if (act === 'restart' || act === 'quic' || act === 'geoupdate') refresh();
   if (act === 'domadd' || act === 'domrm'){
     if (/✗/.test(t)) toast(first || 'Не вышло');
     else if (/уже в списке/.test(t)) toast('Этот сайт уже был в списке');
-    else if (act === 'domadd') toast(/поедет через прокси/.test(t) ? 'Добавил, адреса уже в прокси' : 'Добавил — см. проверку ниже');
+    else if (act === 'domadd') toast(/поедет через прокси/.test(t) ? 'Добавил, адреса уже в прокси' : 'Добавил, смотри проверку ниже');
     else toast('Убрал из списка');
     refresh();
   }
@@ -814,7 +779,7 @@ async function run(act, v, btn){
   }
   if (act === 'tunestart'){
     if (/✓ подбор запущен/.test(t)){
-      toast('Подбор пошёл. Обход пока отключён');
+      toast('Подбор пошёл, обход пока отключён');
       if (tunePoll) clearInterval(tunePoll);
       tuneTick();
       tunePoll = setInterval(tuneTick, 5000);
@@ -831,16 +796,24 @@ async function run(act, v, btn){
   }
 }
 
-/* фоновое обновление статуса — тихое, ничего не блокирует */
+/* фоновое обновление статуса, ничего не блокирует */
 async function refresh(){
   try {
     const t = await api('status');
     if (t) readStatus(t);
-  } catch(e){ /* сеть моргнула — покажем на следующем тике */ }
+  } catch(e){ /* сеть моргнула, покажем на следующем тике */ }
 }
 
 /* ---------- вкладки ---------- */
 const tabs = $('#tabs');
+function movePill(btn, animate){
+  const pill = $('#pill');
+  const prev = pill.style.transition;
+  if (!animate) pill.style.transition = 'none';
+  pill.style.width = btn.offsetWidth + 'px';
+  pill.style.transform = `translateX(${btn.offsetLeft}px)`;
+  if (!animate) requestAnimationFrame(() => { pill.style.transition = prev; });
+}
 function selectTab(name, animate = true){
   tabs.querySelectorAll('button').forEach(b => {
     const on = b.dataset.tab === name;
@@ -853,17 +826,7 @@ function selectTab(name, animate = true){
   try { localStorage.setItem('tab', name); } catch(e){}
   if (name === 'nodes' && !$('#nodelist').children.length) run('nodes');
 }
-function movePill(btn, animate){
-  const pill = $('#pill');
-  const prev = pill.style.transition;
-  if (!animate) pill.style.transition = 'none';
-  pill.style.width = btn.offsetWidth + 'px';
-  pill.style.transform = `translateX(${btn.offsetLeft - 0}px)`;
-  if (!animate) requestAnimationFrame(() => { pill.style.transition = prev; });
-}
-tabs.querySelectorAll('button').forEach(b => {
-  b.onclick = () => selectTab(b.dataset.tab);
-});
+tabs.querySelectorAll('button').forEach(b => { b.onclick = () => selectTab(b.dataset.tab); });
 addEventListener('resize', () => {
   const on = tabs.querySelector('button[aria-selected="true"]');
   if (on) movePill(on, false);
@@ -884,8 +847,12 @@ document.querySelectorAll('button[data-act]').forEach(b => {
 $('#dom').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.querySelector('button[data-act="domadd"]').click();
 });
-$('#findclr').onclick = () => { $('#find').value = ''; render(rawOut); };
-$('#outclr').onclick = () => { paint(''); };
+document.querySelectorAll('button[data-clear]').forEach(b => {
+  b.onclick = () => {
+    if (b.dataset.clear === 'find'){ $('#find').value = ''; render(rawOut); }
+    else paint('');
+  };
+});
 $('#find').addEventListener('input', () => render(rawOut));
 
 (async function init(){
@@ -893,13 +860,17 @@ $('#find').addEventListener('input', () => render(rawOut));
   try { saved = localStorage.getItem('tab') || 'sites'; } catch(e){}
   if (!document.querySelector(`section[data-panel="${saved}"]`)) saved = 'sites';
   selectTab(saved, false);
+  document.fonts && document.fonts.ready.then(() => {
+    const on = tabs.querySelector('button[aria-selected="true"]');
+    if (on) movePill(on, false);
+  });
 
   try {
     const m = await api('meta');
     const g = k => (m.match(new RegExp('^' + k + '=(.*)$', 'm')) || [,''])[1].trim();
     if (g('model')) $('#title').textContent = g('model');
     $('#lan').textContent = g('lan') || '';
-  } catch(e){ toast('Роутер не отвечает — проверь Wi-Fi'); }
+  } catch(e){ toast('Роутер не отвечает. Проверь Wi-Fi'); }
 
   refresh();
   setInterval(() => { if (!userBusy && !document.hidden) refresh(); }, 20000);
