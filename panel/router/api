@@ -50,6 +50,12 @@ case "$a" in
   status)    exec "$RCTL" status ;;
   doctor)    exec "$RCTL" doctor ;;
   yttest)    exec "$RCTL" yttest ;;
+  twitch)
+    if [ -n "$v" ]; then
+      echo "$v" | grep -qE '^[A-Za-z0-9_]{2,32}$' || die "кривое имя канала: $v"
+      exec "$RCTL" twitch "$v"
+    fi
+    exec "$RCTL" twitch ;;
   info)      exec "$RCTL" info ;;
   meta)      exec "$RCTL" meta ;;
   nodes)     exec "$RCTL" nodes list ;;

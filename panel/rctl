@@ -380,6 +380,67 @@ printf "%s\n" "$n" | grep . | awk "{printf \"%4d  %s\n\", NR, \$0}"
 '
 R_WATCHDOG='[ -x /usr/sbin/proxy-watchdog ] && sh /usr/sbin/proxy-watchdog; echo "✓ сторож нод отработал"'
 
+# Твич: набор качеств решает адрес, с которого дёрнут usher.ttvnw.net.
+# С российского адреса потолок 720p60, с европейского появляется 1080p60.
+# Проверяем оба пути и заодно, попадает ли usher в прокси-набор.
+R_TWITCH='
+ch="${1:-jynxzi}"
+CID=kimne78kx3ncx6brgo4mv6wki5h1ko
+HASH=0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712
+echo ":: проверяю твич на канале $ch"
+echo ""
+echo "=== маршрут usher.ttvnw.net ==="
+ips=$(nslookup usher.ttvnw.net 127.0.0.1 2>/dev/null |
+        sed -n "s/^Address: *//p; s/^Address [0-9]*: *//p" |
+        grep -E "^([0-9]{1,3}\.){3}[0-9]{1,3}$" | grep -v "^127\." | sort -u)
+inset=0
+for ip in $ips; do
+  if nft get element inet fw4 proxy4 "{ $ip }" >/dev/null 2>&1; then
+    echo "  ✓ $ip → через ноду"; inset=$((inset+1))
+  else
+    echo "  · $ip → напрямую"
+  fi
+done
+[ -n "$ips" ] || echo "  ✗ usher.ttvnw.net не резолвится"
+echo ""
+tok=$(curl -s -m 20 -X POST -H "Client-ID: $CID" -H "Content-Type: application/json" \
+  -d "{\"operationName\":\"PlaybackAccessToken\",\"variables\":{\"isLive\":true,\"login\":\"$ch\",\"isVod\":false,\"vodID\":\"\",\"playerType\":\"site\"},\"extensions\":{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"$HASH\"}}}" \
+  https://gql.twitch.tv/gql)
+sig=$(printf "%s" "$tok" | sed -n "s/.*\"signature\":\"\([^\"]*\)\".*/\1/p")
+val=$(printf "%s" "$tok" | sed -n "s/.*\"value\":\"\(.*\)\",\"signature.*/\1/p" | sed "s/\\\\\"/\"/g; s/\\\\\\\\/\\\\/g")
+[ -n "$sig" ] || { echo "✗ твич не отдал токен (канала $ch нет?)"; exit 0; }
+echo "=== что отдаёт usher ==="
+for way in прямо нода; do
+  px=""; [ "$way" = нода ] && px="--socks5-hostname 127.0.0.1:1180"
+  f=/tmp/rctl-tw-$way.m3u8
+  code=$(curl -s -m 25 $px -o "$f" -w "%{http_code}" -G \
+    --data-urlencode "token=$val" --data-urlencode "sig=$sig" \
+    --data "allow_source=true&allow_audio_only=true&fast_bread=true&player_backend=mediaplayer&playlist_include_framerate=true&supported_codecs=av1,h265,h264&transcode_mode=cbr_v1" \
+    "https://usher.ttvnw.net/api/channel/hls/$ch.m3u8")
+  if [ "$code" != 200 ]; then
+    echo "  $way: код $code (канал сейчас не в эфире?)"
+    continue
+  fi
+  cc=$(sed -n "s/.*USER-COUNTRY=\"\([A-Z]*\)\".*/\1/p" "$f" | head -1)
+  hd=$(grep -c "RESOLUTION=1920x1080" "$f")
+  qs=$(grep -o "RESOLUTION=[0-9x]*" "$f" | sed "s/RESOLUTION=//" | sort -u | tr "\n" " ")
+  if [ "$hd" -gt 0 ]; then echo "  $way: страна $cc, есть 1080p  [$qs]"
+  else echo "  $way: страна $cc, потолок 720p  [$qs]"; fi
+  rm -f "$f"
+done
+echo ""
+if [ "$inset" -gt 0 ]; then
+  echo "ИТОГ: роутер отправляет usher через ноду, 1080p должен быть."
+  echo "  Если в браузере всё равно 720p, значит запрос ушёл мимо роутера:"
+  echo "  выключи Secure DNS (DoH) в браузере и перезайди на стрим."
+  echo "  Проверка DNS с устройства: открой http://dnscheck.lan:8080/"
+  echo "  Откроется пульт, значит DNS идёт через роутер. Не откроется, значит нет."
+else
+  echo "ИТОГ: usher идёт напрямую, потолок останется 720p."
+  echo "  Лечится: добавить usher.ttvnw.net в список сайтов через прокси."
+fi
+'
+
 # telegram-cidr: MTProto ходит по IP, список статикой лежит в 20-proxy.nft (+доп.файл 21-*).
 # Read-only счётчик — просто считает CIDR-подобные токены в файлах (не разбирает структуру).
 R_TGCIDR_COUNT='
@@ -650,6 +711,7 @@ case "$cmd" in
       *) echo "tune start [домен] [quick|standard|force] | status | result | apply СТРАТЕГИЯ | stop | log"; exit 1 ;;
     esac ;;
   yttest)   remote "$R_YTTEST" ;;
+  twitch)   remote "$R_TWITCH" "${1:-jynxzi}" ;;
   fix)      remote "$R_FIX" ;;
   backup)   remote "$R_BACKUP" ;;
   fetch-backup)
@@ -742,6 +804,7 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl tune start|status|result|apply|stop  подбор стратегии zapret через blockcheck
                              (на время подбора обход отключается — blockcheck поднимает свой nfqws)
   rctl yttest                тест ютуба: не уехал ли в прокси, жив ли zapret, скорость, googlevideo
+  rctl twitch [КАНАЛ]        тест твича: куда идёт usher и даёт ли он 1080p
   rctl nodes list|test|best|use ИМЯ|auto живые ноды через clash API :9090 (best = закрепить лучшую по пингу)
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
   rctl domains check ДОМЕН    разбор: заведён ли, куда резолвится, идёт ли в прокси

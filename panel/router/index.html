@@ -483,6 +483,25 @@ pre:empty{display:none}
     </div>
 
     <div class="block">
+      <h3>Проверка твича</h3>
+      <p class="sub">Набор качеств решает адрес, с которого запрошен плейлист. С российского
+        адреса потолок 720p60, через ноду появляется 1080p60. Кнопка показывает оба пути.
+        Канал нужен живой, иначе твич ничего не отдаст.</p>
+      <div class="field">
+        <label class="lb" for="tvch">Канал в эфире</label>
+        <input id="tvch" placeholder="jynxzi" autocapitalize="off" autocomplete="off"
+               spellcheck="false" enterkeyhint="go">
+      </div>
+      <div class="row" style="margin-top:.6rem">
+        <button class="primary" data-act="twitch" data-src="tvch">Проверить твич</button>
+      </div>
+      <p class="hint">Если тут 1080p есть, а в браузере всё равно 720p, запрос уходит мимо
+        роутера. Проверить это с самого устройства: открыть <code>http://dnscheck.lan:8080/</code>.
+        Открылся пульт, значит DNS идёт через роутер. Не открылся, значит в браузере включён
+        Secure DNS и его надо выключить.</p>
+    </div>
+
+    <div class="block">
       <h3>Диапазоны Telegram</h3>
       <p class="sub">MTProto ходит по адресам, а не по именам, поэтому список сетей держится
         отдельно и дополняется официальным списком с core.telegram.org.</p>
@@ -576,7 +595,7 @@ const WORKNAME = {
   logs:'читаю лог', info:'собираю инфо', restart:'перезапускаю службу',
   domadd:'добавляю сайт', domrm:'убираю сайт', domcheck:'разбираю сайт',
   watchdog:'гоняю сторож', tgcount:'считаю сети', tgupdate:'обновляю сети',
-  quic:'переключаю QUIC', geocount:'считаю geoblock'
+  quic:'переключаю QUIC', geocount:'считаю geoblock', twitch:'проверяю твич'
 };
 let workTimer = null;
 function workOn(act){
@@ -773,6 +792,10 @@ async function run(act, v, btn){
     else toast('Убрал из списка');
     refresh();
   }
+  if (act === 'twitch'){
+    if (/есть 1080p/.test(t)) toast('Через ноду 1080p есть');
+    else toast('1080p не появился, смотри вывод');
+  }
   if (act === 'domcheck'){
     const it = (t.match(/^ИТОГ:\s*(.*)$/m) || [,''])[1];
     if (it) toast(it);
@@ -839,13 +862,16 @@ document.querySelectorAll('button[data-act]').forEach(b => {
     let v = b.dataset.v;
     if (src){
       v = $('#' + src).value.trim();
-      if (!v) { toast('Сначала впиши адрес сайта'); $('#' + src).focus(); return; }
+      if (!v && b.dataset.act !== 'twitch') { toast('Сначала впиши адрес сайта'); $('#' + src).focus(); return; }
     }
     run(b.dataset.act, v, b);
   };
 });
 $('#dom').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.querySelector('button[data-act="domadd"]').click();
+});
+$('#tvch').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.querySelector('button[data-act="twitch"]').click();
 });
 document.querySelectorAll('button[data-clear]').forEach(b => {
   b.onclick = () => {
