@@ -31,6 +31,9 @@ fi
 ROUTER_IP="${ROUTER_IP:-127.0.0.1}"
 SBOX=/etc/sing-box/config.json
 API="${CLASH_API:-127.0.0.1:9090}"
+# без panel.conf (режим «rctl лежит на роутере») переменная не задана,
+# а с set -u это роняло `rctl doctor` — кнопка «Полный чекап» в панели молчала
+DOCTOR_DOMAIN="${DOCTOR_DOMAIN:-claude.ai}"
 
 if [ "$LOCAL" = 1 ]; then
   SSH=""
@@ -151,14 +154,29 @@ all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
 echo ":: пингую все ноды через прокси (до gstatic /generate_204)…"
 d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
+# Групповой замер систематически молчит про часть живых нод (проверено: albania
+# в группе "-", а одиночным запросом 388 мс). Дожимаем промолчавшие поштучно.
+# Строго последовательно и с коротким таймаутом: sing-box обрабатывает delay-
+# запросы по одному, параллельный запуск вешает всю команду на минуты.
+tmp="/tmp/rctl-nodes.$$"; rm -rf "$tmp"; mkdir -p "$tmp"
+miss=""
+for n in $all; do
+  [ "$n" = "auto" ] && continue
+  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+  if [ -n "$ms" ]; then printf "%s" "$ms" > "$tmp/$n"; else miss="$miss $n"; fi
+done
+if [ -n "$miss" ]; then
+  echo ":: групповой замер промолчал про$miss — перепроверяю поштучно…"
+  for n in $miss; do
+    curl -s --max-time 3 "$b/proxies/$n/delay?url=http://www.gstatic.com/generate_204&timeout=2500" |
+      sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p" > "$tmp/$n"
+  done
+fi
 echo ""
 up=0; down=0
 for n in $all; do
   [ "$n" = "auto" ] && continue
-  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
-  if [ -z "$ms" ] && [ "$n" = "$active" ]; then
-    ms=$(curl -s --max-time 6 "$b/proxies/$n/delay?url=http://www.gstatic.com/generate_204&timeout=3000" | sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p")
-  fi
+  ms=$(cat "$tmp/$n" 2>/dev/null)
   m="  "; [ "$n" = "$active" ] && m="=>"
   if [ -n "$ms" ]; then
     q="хорошо"; [ "$ms" -gt 250 ] 2>/dev/null && q="ок"; [ "$ms" -gt 450 ] 2>/dev/null && q="медленно"
@@ -167,6 +185,7 @@ for n in $all; do
     printf "%s %-6s %8s   %s\n" "$m" "$n" "-" "нет ответа"; down=$((down+1))
   fi
 done
+rm -rf "$tmp"
 echo ""
 echo "живых: $up, молчат: $down.  => активная: $active (selector=$sel; auto→$au)"
 echo "закрепить: имя ноды в поле выше; вернуть авто — кнопкой."
@@ -220,14 +239,77 @@ echo ""
 printf "%s\n" "$n" | awk "{printf \"%4d  %s\n\", NR, \$0}"
 '
 
-R_DOMAINS_ADD='
+# Общий кусок: резолв домена через локальный dnsmasq + проверка, что его адреса
+# реально лежат в nft-наборе proxy4 (то есть трафик к ним пойдёт в прокси).
+# Печатает строки-отчёт, наружу отдаёт "hit/miss/nodns" через $VERDICT.
+R_DOM_VERIFY='
+dom_verify() {
+  _d="$1"
+  _ips=$(nslookup "$_d" 127.0.0.1 2>/dev/null |
+           sed -n "s/^Address: *//p; s/^Address [0-9]*: *//p" |
+           grep -E "^([0-9]{1,3}\.){3}[0-9]{1,3}$" | grep -v "^127\." | sort -u)
+  if [ -z "$_ips" ]; then
+    echo "  ✗ $_d не резолвится с роутера (DNS/DoH лежит? домена не существует?)"
+    VERDICT=nodns; return 0
+  fi
+  _in=0; _out=0
+  for _ip in $_ips; do
+    if nft get element inet fw4 proxy4 "{ $_ip }" >/dev/null 2>&1; then
+      echo "  ✓ $_ip → в прокси"; _in=$((_in+1))
+    else
+      echo "  · $_ip → мимо прокси (напрямую)"; _out=$((_out+1))
+    fi
+  done
+  if [ "$_in" -gt 0 ] && [ "$_out" = 0 ]; then VERDICT=hit
+  elif [ "$_in" -gt 0 ]; then VERDICT=part
+  else VERDICT=miss; fi
+  return 0
+}
+'
+
+R_DOMAINS_ADD="$R_DOM_VERIFY"'
+added=""
+cur=" $(uci -q get dhcp.@ipset[0].domain) "
 for d in "$@"; do
+  case "$cur" in
+    *" $d "*) echo "  · $d уже в списке"; continue ;;
+  esac
   uci add_list dhcp.@ipset[0].domain="$d"
   uci add_list dhcp.@ipset[1].domain="$d"
   uci add_list dhcp.@dnsmasq[0].server="/$d/127.0.0.1#5053"
+  cur="$cur$d "
+  added="$added $d"
   echo "  + $d"
 done
-uci commit dhcp && /etc/init.d/dnsmasq restart && echo "✓ применено (dnsmasq перезапущен)"
+if [ -z "$added" ]; then
+  echo "✓ нечего добавлять — всё уже в списке"
+else
+  uci commit dhcp && /etc/init.d/dnsmasq restart && echo "✓ применено (dnsmasq перезапущен)"
+  sleep 1
+  echo ""
+  echo "=== проверка ==="
+  bad=0
+  for d in $added; do
+    VERDICT=""
+    dom_verify "$d"
+    case "$VERDICT" in
+      hit)  echo "  ✓ $d поедет через прокси" ;;
+      part) echo "  ! $d: часть адресов мимо — перезагрузи страницу и проверь ещё раз" ; bad=1 ;;
+      miss) echo "  ! $d: адреса пока не в наборе (обычно это старый DNS-кэш) — см. ниже"; bad=1 ;;
+      *)    bad=1 ;;
+    esac
+  done
+  echo ""
+  if [ "$bad" = 1 ]; then
+    echo "Что делать: на устройстве сбросить DNS-кэш и перезайти на сайт."
+    echo "  · телефон/ноут — выключить и включить Wi-Fi;"
+    echo "  · Chrome держит свой кэш — chrome://net-internals/#dns → Clear host cache;"
+    echo "  · если в браузере включён DoH (Secure DNS) — выключить, иначе роутер не видит запрос."
+  else
+    echo "Если сайт всё равно не открывается: на устройстве сбросить DNS-кэш"
+    echo "(выкл/вкл Wi-Fi) и выключить Secure DNS в браузере — он ходит мимо роутера."
+  fi
+fi
 '
 
 R_DOMAINS_RM='
@@ -238,6 +320,51 @@ for d in "$@"; do
   echo "  - $d"
 done
 uci commit dhcp && /etc/init.d/dnsmasq restart && echo "✓ убрано (dnsmasq перезапущен)"
+'
+
+# Разбор одного домена: где он числится, куда резолвится, пойдёт ли в прокси,
+# и открывается ли он с роутера напрямую и через ноду.
+R_DOM_CHECK="$R_DOM_VERIFY"'
+d="$1"
+echo ":: разбор $d"
+echo ""
+echo "=== где числится ==="
+cur=" $(uci -q get dhcp.@ipset[0].domain) "
+case "$cur" in
+  *" $d "*) echo "  ✓ в своём списке (проксируемые домены)" ;;
+  *) echo "  · в своём списке НЕТ" ;;
+esac
+if [ -f /etc/dnsmasq.d/geoblock.conf ] && grep -q "^nftset=/$d/" /etc/dnsmasq.d/geoblock.conf; then
+  echo "  ✓ есть в автосписке geoblock"
+fi
+if [ -f /etc/geoblock-exclude.txt ] && printf "%s\n" "$d" | grep -qEf /etc/geoblock-exclude.txt 2>/dev/null; then
+  echo "  ! домен под исключением geoblock-exclude — в прокси его пускать запрещено"
+fi
+echo ""
+echo "=== куда резолвится и пойдёт ли в прокси ==="
+VERDICT=""
+dom_verify "$d"
+echo ""
+echo "=== открывается ли с роутера ==="
+c1=$(curl -s -o /dev/null -w "%{http_code}" -m 12 "https://$d/" 2>/dev/null)
+echo "  напрямую: код ${c1:-000}"
+c2=$(curl -s -o /dev/null -w "%{http_code}" -m 15 --socks5-hostname 127.0.0.1:1180 "https://$d/" 2>/dev/null)
+echo "  через ноду: код ${c2:-000}"
+echo ""
+case "$VERDICT" in
+  hit)  echo "ИТОГ: домен заведён и адреса в прокси." ;;
+  part) echo "ИТОГ: часть адресов мимо прокси — у сайта CDN с плавающими IP, обнови страницу." ;;
+  miss) echo "ИТОГ: домен резолвится, но адреса не в наборе. Либо он не добавлен, либо dnsmasq отдал ответ из старого кэша." ;;
+  nodns) echo "ИТОГ: домен вообще не резолвится с роутера — сначала чинить DNS." ;;
+esac
+if [ "${c1:-000}" != "000" ] && [ "${c2:-000}" = "000" ]; then
+  echo "  Напрямую сайт открывается, через ноду — нет: в прокси его гнать не нужно."
+fi
+if [ "${c1:-000}" = "000" ] && [ "${c2:-000}" != "000" ]; then
+  echo "  Напрямую заблокирован, через ноду открывается — прокси для него правильный путь."
+fi
+echo "  Если с роутера сайт открывается, а на устройстве нет — дело в кэше DNS устройства"
+echo "  или в Secure DNS (DoH) браузера: он ходит мимо роутера, и правило не срабатывает."
 '
 
 R_GEO_UPDATE='[ -x /usr/sbin/geoblock-update ] && /usr/sbin/geoblock-update || sh /usr/sbin/geoblock-update'
@@ -506,7 +633,8 @@ case "$cmd" in
       list) remote "$R_DOMAINS_LIST" ;;
       add)  shift; [ $# -ge 1 ] || { echo "rctl domains add ДОМЕН…"; exit 1; }; remote "$R_DOMAINS_ADD" "$@" ;;
       rm)   shift; [ $# -ge 1 ] || { echo "rctl domains rm ДОМЕН"; exit 1; }; remote "$R_DOMAINS_RM" "$@" ;;
-      *) echo "domains list|add ДОМЕН…|rm ДОМЕН"; exit 1 ;;
+      check) shift; [ $# -ge 1 ] || { echo "rctl domains check ДОМЕН"; exit 1; }; remote "$R_DOM_CHECK" "$1" ;;
+      *) echo "domains list|add ДОМЕН…|rm ДОМЕН|check ДОМЕН"; exit 1 ;;
     esac ;;
   geoblock)
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
@@ -616,6 +744,7 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl yttest                тест ютуба: не уехал ли в прокси, жив ли zapret, скорость, googlevideo
   rctl nodes list|test|best|use ИМЯ|auto живые ноды через clash API :9090 (best = закрепить лучшую по пингу)
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
+  rctl domains check ДОМЕН    разбор: заведён ли, куда резолвится, идёт ли в прокси
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
   rctl telegram-cidr update|count        офиц. CIDR Telegram (core.telegram.org), доп.файл, база не трогается
   rctl backup                 sysupgrade-бэкап конфигов (НЕ прошивка), путь во вывод — тянуть через панель/scp

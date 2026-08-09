@@ -10,16 +10,18 @@
 <style>
 /* ============================================================
    Оформление по принципам Apple: системный шрифт, трекинг под
-   размер, translucent-слои с backdrop-filter, пружинные кривые,
+   размер, translucent-слои, критически задемпфированные кривые,
    отклик на нажатие, светлая и тёмная темы, уважение к настройкам
    доступности (reduced motion / transparency / contrast).
+
+   Правило вёрстки этой страницы: НИЧТО не шире экрана. Любой
+   длинный вывод скроллится внутри своего блока, наружу не лезет.
    ============================================================ */
 
 :root{
   --bg:#f5f5f7;
-  --bg2:#ebebf0;
   --surface:255,255,255;
-  --surface-a:0.72;
+  --surface-a:0.74;
   --tx:#1d1d1f;
   --tx2:#6e6e73;
   --tx3:#8e8e93;
@@ -35,13 +37,13 @@
   --spring:cubic-bezier(0.32,0.72,0,1);
   --fast:180ms;
   --base:400ms;
+  --pad:1.25rem;
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#000;
-    --bg2:#0a0a0c;
     --surface:28,28,30;
-    --surface-a:0.66;
+    --surface-a:0.68;
     --tx:#f5f5f7;
     --tx2:#a1a1a6;
     --tx3:#6e6e73;
@@ -57,29 +59,32 @@
 }
 
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%;overflow-x:hidden}
 body{
   margin:0;
+  overflow-x:hidden;
   /* системный шрифт: в нём уже есть оптический размер и таблицы трекинга */
   font:400 1.0625rem/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,Roboto,sans-serif;
   color:var(--tx);
   background:var(--bg);
+  /* без background-attachment:fixed — на телефонах он даёт дёрганый фон */
   background-image:
     radial-gradient(70rem 40rem at 12% -10%, rgba(10,132,255,.10), transparent 60%),
     radial-gradient(60rem 36rem at 92% 4%, rgba(52,199,89,.08), transparent 55%);
-  background-attachment:fixed;
-  min-height:100vh;
-  padding:0 1.25rem 4rem;
+  background-repeat:no-repeat;
+  min-height:100dvh;
+  padding:0 var(--pad) calc(3.5rem + env(safe-area-inset-bottom));
 }
-
 .wrap{max-width:53rem;margin:0 auto}
 
 /* ---------- шапка: translucent-слой, контент едет под ним ---------- */
 header{
   position:sticky;top:0;z-index:20;
-  margin:0 -1.25rem 1.75rem;
-  padding:.85rem 1.25rem;
-  display:flex;align-items:center;gap:.7rem;
+  margin:0 calc(-1 * var(--pad)) 1.5rem;
+  padding:.7rem var(--pad) .7rem;
+  padding-top:calc(.7rem + env(safe-area-inset-top));
+  display:flex;align-items:center;gap:.6rem;
   background:rgba(var(--surface),.72);
   backdrop-filter:blur(20px) saturate(180%);
   -webkit-backdrop-filter:blur(20px) saturate(180%);
@@ -93,40 +98,58 @@ header .mark{
 header .mark.ok{background:var(--ok);box-shadow:0 0 0 .22rem rgba(52,199,89,.18)}
 header .mark.warn{background:var(--warn);box-shadow:0 0 0 .22rem rgba(255,149,10,.18)}
 header .mark.bad{background:var(--bad);box-shadow:0 0 0 .22rem rgba(255,59,48,.18)}
+header .who{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.25}
 header h1{
-  font-size:1.0625rem;font-weight:600;margin:0;
-  letter-spacing:-.01em;                 /* трекинг под размер */
+  font-size:1rem;font-weight:600;margin:0;
+  letter-spacing:-.01em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-header .lan{color:var(--tx2);font-size:.9375rem;margin-left:auto;font-variant-numeric:tabular-nums}
+header .lan{color:var(--tx3);font-size:.8125rem;font-variant-numeric:tabular-nums}
+/* активный сервер виден всегда — за ним и приходят чаще всего */
+#hnode{
+  display:inline-flex;align-items:center;gap:.35rem;flex:none;max-width:9.5rem;
+  background:rgba(var(--line),.06);
+  border:1px solid rgba(var(--line),var(--line-a));
+  border-radius:999px;padding:.3rem .6rem;
+  font-size:.875rem;font-weight:600;letter-spacing:-.005em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  cursor:pointer;
+  transition:transform 100ms ease-out,background var(--fast) var(--spring);
+}
+#hnode:active{transform:scale(.96)}
+#hnode.upd{animation:pop var(--base) var(--spring)}
+@keyframes pop{from{transform:scale(.9);opacity:.5}to{transform:none;opacity:1}}
 
 /* ---------- герой ---------- */
-.hero{padding:.5rem 0 2rem}
+.hero{padding:.25rem 0 1.5rem}
 .eyebrow{
   font-size:.8125rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--tx3);margin:0 0 .6rem;
+  color:var(--tx3);margin:0 0 .55rem;
 }
 .hero h2{
-  margin:0 0 .5rem;
-  font-size:clamp(2.1rem,7vw,3.25rem);
+  margin:0 0 .45rem;
+  font-size:clamp(2rem,7vw,3.25rem);
   line-height:1.04;                      /* крупному тексту — плотный интерлиньяж */
   letter-spacing:-.028em;                /* и отрицательный трекинг */
   font-weight:650;
 }
 .hero p{margin:0;color:var(--tx2);font-size:1.0625rem;max-width:34rem}
+.hero p b{color:var(--tx);font-weight:600}
 
-/* ---------- действия ---------- */
-.actions{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin:1.75rem 0 1.25rem}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin:1.5rem 0 1rem}
+
+/* ---------- кнопки ---------- */
 button{
   font:inherit;font-weight:500;
   color:var(--tx);
-  background:rgba(var(--surface),.8);
+  background:rgba(var(--surface),.82);
   backdrop-filter:blur(14px) saturate(160%);
   -webkit-backdrop-filter:blur(14px) saturate(160%);
   border:1px solid rgba(var(--line),var(--line-a));
   border-radius:.95rem;
-  padding:.72rem 1.05rem;
+  padding:.7rem 1rem;
   cursor:pointer;
+  max-width:100%;
   box-shadow:var(--shadow-s);
   /* отклик мгновенный: 100 мс на нажатие, спокойный возврат */
   transition:transform 100ms ease-out,background var(--fast) var(--spring),
@@ -135,27 +158,36 @@ button{
   -webkit-tap-highlight-color:transparent;
 }
 button:active:not(:disabled){transform:scale(.97)}
-button:disabled{opacity:.4;cursor:default}
+button:disabled{opacity:.45;cursor:default}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-
 button.primary{
   background:var(--accent);color:#fff;border-color:transparent;
   box-shadow:0 1px 2px rgba(0,0,0,.12), 0 10px 24px rgba(0,113,227,.28);
 }
-button.big{padding:1.25rem 1.1rem;font-size:1.125rem;font-weight:600;border-radius:1.15rem;letter-spacing:-.01em}
-button.sm{padding:.5rem .82rem;font-size:.9375rem;border-radius:.7rem}
+button.big{padding:1.15rem 1rem;font-size:1.0625rem;font-weight:600;border-radius:1.15rem;letter-spacing:-.01em}
+button.sm{padding:.5rem .8rem;font-size:.9375rem;border-radius:.7rem}
 button.quiet{background:transparent;box-shadow:none}
 button.danger{color:var(--bad)}
+/* кнопка, которая прямо сейчас работает */
+button.busy{position:relative;color:transparent!important}
+button.busy::after{
+  content:"";position:absolute;inset:0;margin:auto;
+  width:1.05rem;height:1.05rem;border-radius:50%;
+  border:2px solid rgba(var(--line),.25);border-top-color:var(--accent);
+  animation:spin .7s linear infinite;
+}
+button.primary.busy::after{border-color:rgba(255,255,255,.35);border-top-color:#fff}
 
 /* ---------- капсулы состояния ---------- */
 .chips{display:flex;flex-wrap:wrap;gap:.5rem}
 .chip{
-  display:inline-flex;align-items:center;gap:.45rem;
-  background:rgba(var(--surface),.66);
+  display:inline-flex;align-items:center;gap:.4rem;max-width:100%;
+  background:rgba(var(--surface),.7);
   backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:999px;padding:.36rem .78rem;
+  border-radius:999px;padding:.34rem .75rem;
   font-size:.9375rem;color:var(--tx2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   animation:rise var(--base) var(--spring) both;
 }
 .chip b{color:var(--tx);font-weight:600}
@@ -163,12 +195,36 @@ button.danger{color:var(--bad)}
 .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
 @keyframes rise{from{opacity:0;transform:translateY(.4rem)}to{opacity:1;transform:none}}
 
+/* ---------- вкладки: сегмент-контрол с едущей плашкой ---------- */
+.tabs{
+  position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;
+  gap:.15rem;margin:0 0 1.1rem;padding:.25rem;
+  background:rgba(var(--line),.06);
+  border-radius:1rem;
+  overflow:hidden;
+}
+.tabs .pill{
+  position:absolute;top:.25rem;bottom:.25rem;left:0;
+  border-radius:.8rem;
+  background:rgba(var(--surface),.95);
+  box-shadow:var(--shadow-s);
+  transition:transform var(--base) var(--spring),width var(--base) var(--spring);
+  pointer-events:none;
+}
+.tabs button{
+  position:relative;z-index:1;
+  background:none;border:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;
+  padding:.5rem .3rem;border-radius:.8rem;
+  font-size:.9375rem;font-weight:500;color:var(--tx2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.tabs button[aria-selected="true"]{color:var(--tx);font-weight:600}
+
 /* ---------- индикатор работы ---------- */
 #work{
-  position:sticky;top:3.6rem;z-index:15;
   display:none;align-items:center;gap:.7rem;
-  margin-bottom:1rem;padding:.7rem 1rem;
-  background:rgba(var(--surface),.8);
+  margin-bottom:1rem;padding:.68rem .9rem;
+  background:rgba(var(--surface),.82);
   backdrop-filter:blur(18px) saturate(180%);
   -webkit-backdrop-filter:blur(18px) saturate(180%);
   border:1px solid rgba(var(--line),var(--line-a));
@@ -179,7 +235,7 @@ button.danger{color:var(--bad)}
 #work.on{display:flex}
 /* стеклянная поверхность появляется как материал: размытие и масштаб вместе */
 @keyframes materialize{
-  from{opacity:0;transform:scale(.97);backdrop-filter:blur(0) saturate(100%)}
+  from{opacity:0;transform:scale(.98);backdrop-filter:blur(0) saturate(100%)}
   to{opacity:1;transform:none}
 }
 .spin{
@@ -189,7 +245,7 @@ button.danger{color:var(--bad)}
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 #worktx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx2)}
-#worksec{color:var(--tx3);font-variant-numeric:tabular-nums}
+#worksec{color:var(--tx3);font-variant-numeric:tabular-nums;flex:none}
 
 /* ---------- карточки ---------- */
 .card{
@@ -198,87 +254,87 @@ button.danger{color:var(--bad)}
   -webkit-backdrop-filter:blur(20px) saturate(180%);
   border:1px solid rgba(var(--line),var(--line-a));
   border-radius:1.15rem;
-  padding:1.35rem;
-  margin-bottom:1rem;
+  padding:1.2rem;
+  margin-bottom:.9rem;
   box-shadow:var(--shadow-l);
 }
 .card h3{
-  margin:0 0 1rem;font-size:.8125rem;font-weight:600;
+  margin:0 0 .9rem;font-size:.8125rem;font-weight:600;
   letter-spacing:.06em;text-transform:uppercase;color:var(--tx3);
 }
-.row{display:flex;flex-wrap:wrap;gap:.55rem}
-.note{color:var(--tx2);font-size:.9375rem;margin:0 0 1rem;max-width:44rem}
+.row{display:flex;flex-wrap:wrap;gap:.5rem}
+.row > button{flex:1 1 auto;min-width:0}
+.note{color:var(--tx2);font-size:.9375rem;margin:0 0 .9rem;max-width:44rem;overflow-wrap:anywhere}
 .note b{color:var(--warn);font-weight:600}
 .note code,code{
   font:.875rem ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
   background:rgba(var(--line),.06);padding:.1rem .35rem;border-radius:.35rem;
 }
+.hint{color:var(--tx3);font-size:.875rem;margin:.7rem 0 0}
 
+/* ---------- поля ввода ---------- */
+.field{display:flex;gap:.5rem;flex-wrap:wrap}
+.field input{flex:1 1 100%}
+.field button{flex:1 1 auto}
 input{
   font:inherit;color:var(--tx);
-  background:rgba(var(--line),.04);
+  background:rgba(var(--line),.05);
   border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:.7rem;padding:.6rem .82rem;flex:1;min-width:9rem;
+  border-radius:.7rem;padding:.6rem .8rem;
+  flex:1 1 12rem;min-width:0;max-width:100%;
   transition:border-color var(--fast) var(--spring),background var(--fast) var(--spring);
 }
 input:focus{outline:none;border-color:var(--accent);background:rgba(var(--line),.02)}
 input::placeholder{color:var(--tx3)}
 
-/* ---------- раскрытие подробностей ---------- */
-details summary{
-  list-style:none;cursor:pointer;user-select:none;
-  display:inline-flex;align-items:center;gap:.45rem;
-  color:var(--accent);font-weight:500;padding:.6rem 0;margin-bottom:.5rem;
-}
-details summary::-webkit-details-marker{display:none}
-details summary .caret{
-  width:.42rem;height:.42rem;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;
-  transform:rotate(-45deg);transition:transform var(--base) var(--spring);
-}
-details[open] summary .caret{transform:rotate(45deg)}
-details[open] > .card{animation:materialize var(--base) var(--spring) both}
-
 /* ---------- серверы ---------- */
-.nodes{display:grid;gap:.4rem;margin-top:.9rem}
+.nodes{display:grid;gap:.35rem;margin-top:.85rem}
 .node{
-  display:flex;align-items:center;gap:.7rem;
-  background:rgba(var(--line),.035);
+  display:flex;align-items:center;gap:.65rem;
+  background:rgba(var(--line),.04);
   border:1px solid transparent;
-  border-radius:.8rem;padding:.62rem .8rem;
-  cursor:pointer;
+  border-radius:.8rem;padding:.6rem .75rem;
+  cursor:pointer;min-width:0;
   transition:transform 100ms ease-out,background var(--fast) var(--spring),border-color var(--fast) var(--spring);
   animation:rise var(--base) var(--spring) both;
 }
 .node:active{transform:scale(.985)}
-.node:hover{background:rgba(var(--line),.06)}
+.node:hover{background:rgba(var(--line),.07)}
 .node.active{border-color:var(--accent);background:rgba(10,132,255,.10)}
 .node .flag{font-size:1.15rem;line-height:1;flex:none}
-.node .nm{flex:1;font-weight:500;letter-spacing:-.005em}
+.node .nm{flex:1;min-width:0;font-weight:500;letter-spacing:-.005em;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .node .ms{color:var(--tx2);font-size:.9375rem;font-variant-numeric:tabular-nums;flex:none}
-.node.dead{opacity:.42;cursor:default}
-.node.dead:active{transform:none}
-.track{width:3.2rem;height:.22rem;border-radius:999px;background:rgba(var(--line),.12);flex:none;overflow:hidden}
+/* молчащую ноду не блокируем: групповой замер врёт, дать нажать всё равно */
+.node.dead{opacity:.55}
+.node.dead .ms{color:var(--tx3)}
+.track{width:3rem;height:.22rem;border-radius:999px;background:rgba(var(--line),.12);flex:none;overflow:hidden}
 .track i{display:block;height:100%;border-radius:999px;background:var(--ok);
          transition:width var(--base) var(--spring)}
 .track i.mid{background:var(--warn)} .track i.slow{background:var(--bad)}
 
 /* ---------- подбор стратегии ---------- */
 .tuneline{
-  display:flex;align-items:center;gap:.7rem;
-  background:rgba(var(--line),.035);border-radius:.8rem;padding:.62rem .8rem;margin-bottom:.4rem;
+  display:flex;align-items:center;gap:.6rem;min-width:0;
+  background:rgba(var(--line),.04);border-radius:.8rem;padding:.6rem .75rem;margin-bottom:.35rem;
   animation:rise var(--base) var(--spring) both;
 }
-.tuneline code{flex:1;word-break:break-all;background:transparent;padding:0}
+.tuneline code{flex:1;min-width:0;overflow-wrap:anywhere;background:transparent;padding:0}
 
 /* ---------- вывод ---------- */
+.outbox{margin-top:.4rem}
+.outbar{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem;flex-wrap:wrap}
+.outbar input{flex:1 1 8rem}
+.outbar button{flex:none}
 pre{
   background:rgba(var(--line),.05);
   border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:1rem;padding:1rem 1.1rem;margin:0;
-  overflow:auto;max-height:58vh;
+  border-radius:1rem;padding:.9rem 1rem;margin:0;
+  overflow:auto;max-height:55vh;max-width:100%;
   font:.8125rem/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
-  white-space:pre-wrap;word-break:break-word;
+  white-space:pre-wrap;overflow-wrap:anywhere;
   animation:materialize var(--base) var(--spring) both;
+  -webkit-overflow-scrolling:touch;
 }
 pre:empty{display:none}
 .l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--warn)}
@@ -286,16 +342,17 @@ pre:empty{display:none}
 
 /* ---------- уведомление ---------- */
 #toast{
-  position:fixed;left:50%;bottom:1.4rem;z-index:40;
+  position:fixed;left:50%;bottom:calc(1.2rem + env(safe-area-inset-bottom));z-index:40;
   transform:translateX(-50%) translateY(150%);
-  background:rgba(var(--surface),.86);
+  background:rgba(var(--surface),.88);
   backdrop-filter:blur(22px) saturate(180%);
   -webkit-backdrop-filter:blur(22px) saturate(180%);
   border:1px solid rgba(var(--line),var(--line-a));
-  border-radius:1rem;padding:.75rem 1.15rem;
-  box-shadow:var(--shadow-l);max-width:92vw;
+  border-radius:1rem;padding:.72rem 1.1rem;
+  box-shadow:var(--shadow-l);max-width:min(92vw,30rem);
   font-size:.9375rem;font-weight:500;
   display:flex;align-items:center;gap:.55rem;
+  overflow-wrap:anywhere;
   /* уходит тем же путём, каким пришло */
   transition:transform var(--base) var(--spring),opacity var(--fast) linear;
   opacity:0;
@@ -306,16 +363,17 @@ pre:empty{display:none}
 @media (prefers-reduced-motion: reduce){
   *{animation-duration:.01ms !important;animation-iteration-count:1 !important;
     transition-duration:120ms !important}
-  .spin{animation:none;border-top-color:var(--accent);opacity:.6}
+  .spin,button.busy::after{animation:none;border-top-color:var(--accent);opacity:.6}
   button:active:not(:disabled){transform:none}
   #toast{transition:opacity 160ms linear;transform:translateX(-50%)}
   #toast:not(.show){opacity:0;pointer-events:none}
 }
 @media (prefers-reduced-transparency: reduce){
-  header,.card,button,.chip,#work,#toast{
+  header,.card,button,.chip,#work,#toast,.tabs .pill{
     background:rgb(var(--surface));backdrop-filter:none;-webkit-backdrop-filter:none;
   }
   button.primary{background:var(--accent)}
+  .tabs button{background:none}
 }
 @media (prefers-contrast: more){
   :root{--line-a:0.35;--tx2:var(--tx)}
@@ -323,11 +381,13 @@ pre:empty{display:none}
 }
 
 @media (max-width:34rem){
-  body{padding:0 1rem 3rem}
-  header{margin:0 -1rem 1.35rem;padding:.8rem 1rem}
+  :root{--pad:1rem}
   header .lan{display:none}
+  #hnode{max-width:7rem}
   .actions{grid-template-columns:1fr}
-  .card{padding:1.1rem;border-radius:1rem}
+  .card{padding:1rem;border-radius:1rem}
+  .tabs button{font-size:.875rem;padding:.5rem .2rem}
+  pre{font-size:.75rem;padding:.8rem .85rem}
 }
 </style>
 </head>
@@ -335,17 +395,14 @@ pre:empty{display:none}
 
 <header>
   <i class="mark" id="mark"></i>
-  <h1 id="title">Роутер</h1>
-  <span class="lan" id="lan"></span>
+  <span class="who">
+    <h1 id="title">Роутер</h1>
+    <span class="lan" id="lan"></span>
+  </span>
+  <span id="hnode" hidden title="активный сервер обхода"></span>
 </header>
 
 <div class="wrap">
-
-  <div id="work">
-    <i class="spin"></i>
-    <span id="worktx">идёт работа</span>
-    <span id="worksec">0 с</span>
-  </div>
 
   <section class="hero">
     <p class="eyebrow" id="eyebrow">Состояние</p>
@@ -360,40 +417,87 @@ pre:empty{display:none}
     <div class="chips" id="chips"></div>
   </section>
 
-  <details id="adv">
-    <summary><i class="caret"></i>Подробности и ручные настройки</summary>
+  <nav class="tabs" id="tabs" role="tablist">
+    <i class="pill" id="pill"></i>
+    <button role="tab" data-tab="sites" aria-selected="true">Сайты</button>
+    <button role="tab" data-tab="nodes" aria-selected="false">Серверы</button>
+    <button role="tab" data-tab="svc" aria-selected="false">Службы</button>
+    <button role="tab" data-tab="more" aria-selected="false">Ещё</button>
+  </nav>
 
+  <div id="work">
+    <i class="spin"></i>
+    <span id="worktx">идёт работа</span>
+    <span id="worksec">0 с</span>
+  </div>
+
+  <!-- ---------------- САЙТЫ ---------------- -->
+  <section data-panel="sites">
+    <div class="card">
+      <h3>Сайт через прокси</h3>
+      <p class="note">Впиши адрес — можно как есть, со <code>https://</code> и <code>www</code>,
+        разберётся сам. «Проверить» показывает, заведён ли сайт, куда он резолвится
+        и пойдёт ли реально через прокси.</p>
+      <div class="field">
+        <input id="dom" placeholder="militarysummary.com" autocapitalize="off" autocomplete="off"
+               spellcheck="false" inputmode="url" enterkeyhint="go">
+        <button class="sm primary" data-act="domadd" data-src="dom">Добавить</button>
+        <button class="sm" data-act="domcheck" data-src="dom">Проверить</button>
+        <button class="sm danger" data-act="domrm" data-src="dom">Убрать</button>
+      </div>
+      <p class="hint">Не открылось сразу — устройство держит старый DNS-ответ.
+        Выключи и включи Wi-Fi на нём. В браузере должен быть выключен Secure DNS (DoH),
+        иначе запрос идёт мимо роутера и правило не срабатывает.</p>
+    </div>
+
+    <div class="card">
+      <h3>Списки</h3>
+      <div class="row">
+        <button class="sm" data-act="domains">Свои сайты</button>
+        <button class="sm" data-act="geolist">Список geoblock</button>
+        <button class="sm" data-act="geocount">Сколько в geoblock</button>
+        <button class="sm" data-act="geoupdate">Обновить geoblock</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- СЕРВЕРЫ ---------------- -->
+  <section data-panel="nodes" hidden>
     <div class="card">
       <h3>Серверы обхода</h3>
       <div class="row">
-        <button class="sm" data-act="nodes">Показать с пингом</button>
+        <button class="sm primary" data-act="nodes">Обновить пинг</button>
         <button class="sm" data-act="best">Выбрать лучший</button>
         <button class="sm" data-act="auto">Автовыбор</button>
       </div>
       <div class="nodes" id="nodelist"></div>
+      <p class="hint">Жми по строке, чтобы закрепить сервер. «Молчит» — это часто
+        враньё группового замера, такой сервер тоже можно попробовать.</p>
     </div>
+  </section>
 
+  <!-- ---------------- СЛУЖБЫ ---------------- -->
+  <section data-panel="svc" hidden>
     <div class="card">
-      <h3>Службы</h3>
+      <h3>Перезапуск</h3>
       <div class="row">
-        <button class="sm" data-act="restart" data-v="sing-box">Перезапустить прокси</button>
-        <button class="sm" data-act="restart" data-v="zapret">Перезапустить zapret</button>
-        <button class="sm" data-act="restart" data-v="dnsmasq">Перезапустить DNS</button>
+        <button class="sm" data-act="restart" data-v="sing-box">Прокси</button>
+        <button class="sm" data-act="restart" data-v="zapret">Zapret</button>
+        <button class="sm" data-act="restart" data-v="dnsmasq">DNS</button>
         <button class="sm" data-act="doctor">Полный чекап</button>
       </div>
-      <div class="row" style="margin-top:.55rem">
+      <div class="row" style="margin-top:.5rem">
         <button class="sm" data-act="quic" data-v="on">QUIC блок вкл</button>
         <button class="sm" data-act="quic" data-v="off">QUIC блок выкл</button>
         <button class="sm" data-act="watchdog">Прогнать сторож</button>
-        <button class="sm" data-act="info">Инфо о системе</button>
       </div>
     </div>
 
     <div class="card">
       <h3>Стратегия обхода</h3>
       <p class="note">Гоняет штатный <code>blockcheck</code> и ищет параметры, которые сейчас пробивают
-        блокировку. <b>На время подбора обход отключается</b> — blockcheck поднимает свой nfqws,
-        и у всех дома интернет будет как без обхода. Вернётся само.</p>
+        блокировку. <b>На время подбора обход отключается</b> — у всех дома интернет будет
+        как без обхода. Вернётся само.</p>
       <div class="row">
         <button class="sm" data-act="tunestart" data-v="quick">Быстрый · ~2 мин</button>
         <button class="sm" data-act="tunestart" data-v="standard">Обычный · 5–15 мин</button>
@@ -402,39 +506,33 @@ pre:empty{display:none}
       </div>
       <div id="tunebox"></div>
     </div>
+  </section>
 
+  <!-- ---------------- ЕЩЁ ---------------- -->
+  <section data-panel="more" hidden>
     <div class="card">
-      <h3>Домены через прокси</h3>
+      <h3>Логи и система</h3>
       <div class="row">
-        <input id="dom" placeholder="example.com" autocapitalize="off" autocomplete="off" spellcheck="false">
-        <button class="sm" data-act="domadd" data-src="dom">Добавить</button>
-        <button class="sm danger" data-act="domrm" data-src="dom">Убрать</button>
+        <button class="sm" data-act="logs" data-v="sing-box">Лог прокси</button>
+        <button class="sm" data-act="logs" data-v="zapret">Лог zapret</button>
+        <button class="sm" data-act="logs" data-v="dns">Лог DNS</button>
+        <button class="sm" data-act="info">Инфо о системе</button>
       </div>
-      <div class="row" style="margin-top:.55rem">
-        <button class="sm" data-act="domains">Список своих</button>
-        <button class="sm" data-act="geocount">Сколько в geoblock</button>
-        <button class="sm" data-act="geolist">Показать geoblock</button>
-        <button class="sm" data-act="geoupdate">Обновить geoblock</button>
-      </div>
-      <div class="row" style="margin-top:.55rem">
-        <input id="find" placeholder="поиск по выводу ниже" autocapitalize="off">
-        <button class="sm quiet" id="findclr">Сброс</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Логи</h3>
-      <div class="row">
-        <button class="sm" data-act="logs" data-v="sing-box">Прокси</button>
-        <button class="sm" data-act="logs" data-v="zapret">Zapret</button>
-        <button class="sm" data-act="logs" data-v="dns">DNS</button>
+      <div class="row" style="margin-top:.5rem">
         <button class="sm" data-act="tgcount">Telegram CIDR</button>
         <button class="sm" data-act="tgupdate">Обновить Telegram CIDR</button>
       </div>
     </div>
-  </details>
+  </section>
 
-  <pre id="out"></pre>
+  <div class="outbox">
+    <div class="outbar" id="outbar" hidden>
+      <input id="find" placeholder="поиск по выводу" autocapitalize="off" autocomplete="off">
+      <button class="sm quiet" id="findclr">Сброс</button>
+      <button class="sm quiet" id="outclr">Очистить</button>
+    </div>
+    <pre id="out"></pre>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -442,7 +540,9 @@ pre:empty{display:none}
 <script>
 const $ = s => document.querySelector(s);
 const out = $('#out'), mark = $('#mark');
-let busy = false, rawOut = '';
+let rawOut = '';
+let userBusy = 0;        // сколько действий пользователя сейчас в работе
+let curNode = '';
 
 /* флаг по имени ноды: страна — это имя без хвостовой цифры */
 const FLAGS = {
@@ -460,18 +560,19 @@ const FLAGS = {
   bulgaria:'🇧🇬', bg:'🇧🇬', lithuania:'🇱🇹', lt:'🇱🇹', moldova:'🇲🇩', md:'🇲🇩',
   belarus:'🇧🇾', by:'🇧🇾', hongkong:'🇭🇰', hk:'🇭🇰'
 };
-const flagOf = n => FLAGS[n.toLowerCase().replace(/\d+$/, '')] || '🏳️';
-const esc = s => s.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const flagOf = n => FLAGS[String(n).toLowerCase().replace(/\d+$/, '')] || '🏳️';
+const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 
 function toast(msg){
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._t);
-  t._t = setTimeout(() => t.classList.remove('show'), 3400);
+  t._t = setTimeout(() => t.classList.remove('show'), 3800);
 }
 
-function paint(text){ rawOut = text; render(text); }
+/* ---------- вывод ---------- */
+function paint(text){ rawOut = text; $('#outbar').hidden = !text.trim(); render(text); }
 function render(text){
   const filter = $('#find').value.trim().toLowerCase();
   const frag = document.createDocumentFragment();
@@ -490,48 +591,67 @@ function render(text){
   out.appendChild(frag);
 }
 
-/* ---- индикатор долгой работы: видно, что не зависло ---- */
+/* ---------- индикатор долгой работы ---------- */
 const WORKNAME = {
   fix:'чиню', yttest:'проверяю ютуб', nodes:'меряю серверы', best:'ищу быстрейший',
   auto:'включаю автовыбор', use:'переключаю сервер', doctor:'полный чекап',
-  geoupdate:'обновляю geoblock', geolist:'читаю список', domains:'читаю домены',
+  geoupdate:'обновляю geoblock', geolist:'читаю список', domains:'читаю список сайтов',
   tunestart:'запускаю подбор', tuneapply:'применяю стратегию', tunestop:'прерываю',
   logs:'читаю лог', info:'собираю инфо', restart:'перезапускаю службу',
-  domadd:'добавляю домен', domrm:'убираю домен', watchdog:'гоняю сторож',
-  tgcount:'считаю диапазоны', tgupdate:'обновляю диапазоны', quic:'переключаю QUIC'
+  domadd:'добавляю сайт', domrm:'убираю сайт', domcheck:'разбираю сайт',
+  watchdog:'гоняю сторож', tgcount:'считаю диапазоны', tgupdate:'обновляю диапазоны',
+  quic:'переключаю QUIC', geocount:'считаю geoblock'
 };
-let workTimer = null;
+let workTimer = null, workT0 = 0;
 function workOn(act){
-  const t0 = Date.now();
+  workT0 = Date.now();
   $('#worktx').textContent = WORKNAME[act] || 'работаю';
   $('#worksec').textContent = '0 с';
   $('#work').classList.add('on');
+  clearInterval(workTimer);
   workTimer = setInterval(() => {
-    $('#worksec').textContent = Math.round((Date.now() - t0) / 1000) + ' с';
+    $('#worksec').textContent = Math.round((Date.now() - workT0) / 1000) + ' с';
   }, 500);
 }
 function workOff(){ clearInterval(workTimer); $('#work').classList.remove('on'); }
 
-async function call(act, v){
-  if (busy) return null;
-  busy = true;
-  document.querySelectorAll('button').forEach(b => b.disabled = true);
-  if (act !== 'status' && act !== 'meta' && act !== 'tunestatus') workOn(act);
+/* ---------- запрос к роутеру ----------
+   Фоновый опрос статуса НЕ блокирует действия пользователя: раньше общий
+   флаг busy глотал нажатия молча (кликаешь сервер — ничего не происходит). */
+async function api(act, v){
+  const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
+  const r = await fetch(u, {cache:'no-store'});
+  return await r.text();
+}
+
+async function call(act, v, btn){
+  userBusy++;
+  if (btn) { btn.classList.add('busy'); btn.disabled = true; }
+  workOn(act);
   try {
-    const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
-    const r = await fetch(u, {cache:'no-store'});
-    return await r.text();
+    return await api(act, v);
   } catch(e){
-    toast('Роутер не отвечает');
+    toast('Роутер не отвечает — проверь Wi-Fi');
     return null;
   } finally {
-    busy = false;
-    document.querySelectorAll('button').forEach(b => b.disabled = false);
-    workOff();
+    userBusy--;
+    if (btn) { btn.classList.remove('busy'); btn.disabled = false; }
+    if (!userBusy) workOff();
   }
 }
 
-/* ---- состояние ---- */
+/* ---------- состояние ---------- */
+function setNodeChip(node){
+  const el = $('#hnode');
+  if (!node){ el.hidden = true; return; }
+  el.hidden = false;
+  if (node !== curNode){
+    el.innerHTML = `${flagOf(node)} <span>${esc(node)}</span>`;
+    el.classList.remove('upd'); void el.offsetWidth; el.classList.add('upd');
+  }
+  curNode = node;
+}
+
 function readStatus(t){
   const chips = $('#chips');
   const svc = [['sing-box','Прокси'],['zapret','Zapret'],['DoH','DNS'],['dnsmasq','dnsmasq']];
@@ -550,20 +670,15 @@ function readStatus(t){
   const node = (t.match(/активная нода:\s*(\S+)/) || [])[1];
   const dom = (t.match(/проксируемых доменов \(uci\):\s*(\d+)/) || [])[1];
   const geo = (t.match(/geoblock:\s*(\d+)/) || [])[1];
-  if (node){
-    const el = document.createElement('span');
-    el.className = 'chip'; el.style.animationDelay = '120ms';
-    el.innerHTML = `${flagOf(node)}<b>${esc(node)}</b>`;
-    frag.appendChild(el);
-  }
   if (dom){
     const el = document.createElement('span');
-    el.className = 'chip'; el.style.animationDelay = '150ms';
-    el.innerHTML = `<i class="dot ok"></i>доменов ${dom}${geo ? ' + ' + geo : ''}`;
+    el.className = 'chip'; el.style.animationDelay = '120ms';
+    el.innerHTML = `<i class="dot ok"></i>сайтов ${dom}${geo ? ' + ' + geo : ''}`;
     frag.appendChild(el);
   }
   chips.innerHTML = '';
   chips.appendChild(frag);
+  setNodeChip(node);
 
   if (!down.length && node){
     mark.className = 'mark ok';
@@ -583,7 +698,7 @@ function readStatus(t){
   }
 }
 
-/* ---- серверы ---- */
+/* ---------- серверы ---------- */
 function readNodes(t){
   const box = $('#nodelist');
   const rows = [];
@@ -604,27 +719,25 @@ function readNodes(t){
     const cls = !r.ms ? '' : r.ms < 250 ? '' : r.ms < 450 ? 'mid' : 'slow';
     el.innerHTML =
       `<span class="flag">${flagOf(r.name)}</span>` +
-      `<span class="nm">${esc(r.name)}</span>` +
+      `<span class="nm">${esc(r.name)}${r.active ? ' ✓' : ''}</span>` +
       (r.ms
         ? `<span class="track"><i class="${cls}" style="width:${Math.max(10, Math.round(100 * r.ms / worst))}%"></i></span>
            <span class="ms">${r.ms} мс</span>`
         : `<span class="ms">молчит</span>`);
-    if (r.ms) el.onclick = () => run('use', r.name);
+    // кликается любая нода, включая «молчащую»: групповой замер регулярно врёт
+    el.onclick = () => { if (r.name !== curNode) run('use', r.name); else toast('Этот сервер и так активен'); };
     frag.appendChild(el);
   });
   box.innerHTML = '';
   box.appendChild(frag);
 }
 
-/* ---- подбор стратегии ---- */
+/* ---------- подбор стратегии ---------- */
 let tunePoll = null;
 
 async function tuneTick(){
   let t;
-  try {
-    const r = await fetch('cgi-bin/api?a=tunestatus', {cache:'no-store'});
-    t = await r.text();
-  } catch(e){ return; }
+  try { t = await api('tunestatus'); } catch(e){ return; }
 
   const phase = (t.match(/^фаза:\s*(.*)$/m) || [,''])[1];
   const el = (t.match(/^прошло:\s*(.*)$/m) || [,''])[1];
@@ -647,8 +760,7 @@ async function tuneTick(){
 }
 
 async function tuneResults(){
-  const r = await fetch('cgi-bin/api?a=tuneresult', {cache:'no-store'});
-  const t = (await r.text()).trim();
+  const t = (await api('tuneresult')).trim();
   const box = $('#tunebox');
   if (!t){
     box.insertAdjacentHTML('beforeend',
@@ -663,34 +775,50 @@ async function tuneResults(){
       `<div class="tuneline"><code>${esc(l)}</code>
        <button class="sm" data-tune="${i+1}">Применить</button></div>`).join(''));
   box.querySelectorAll('button[data-tune]').forEach(b => {
-    b.onclick = () => run('tuneapply', b.dataset.tune);
+    b.onclick = () => run('tuneapply', b.dataset.tune, b);
   });
 }
 
-/* ---- запуск действий ---- */
-async function run(act, v){
-  const t = await call(act, v);
+/* ---------- запуск действий ---------- */
+async function run(act, v, btn){
+  const t = await call(act, v, btn);
   if (t === null) return;
   paint(t);
   if (act === 'nodes') readNodes(t);
+
+  const first = (t.split('\n').find(l => l.trim()) || '').replace(/^[✓✗·!]\s*/, '');
+
   if (act === 'fix'){
     toast(/чинить было нечего/.test(t) ? 'Всё и так работало' : 'Починил, проверяй');
     refresh();
   }
   if (act === 'use' || act === 'best' || act === 'auto'){
-    toast((t.split('\n').find(l => l.trim()) || 'Готово').replace(/^[✓✗]\s*/, ''));
-    refresh();
+    if (/^✓/m.test(t)) toast('Сервер переключён' + (act === 'use' && v ? ': ' + v : ''));
+    else toast(first || 'Не переключилось');
+    await refresh();
+    if (act === 'use' && curNode !== v) toast('Роутер оставил сервер ' + curNode + ' — этот не поднялся');
   }
   if (act === 'yttest')
     toast(/ИТОГ: ютуб уехал/.test(t) ? 'Ютуб уехал в прокси — жми «Починить»' : 'С роутера ютуб в порядке');
   if (act === 'restart' || act === 'quic' || act === 'geoupdate') refresh();
+  if (act === 'domadd' || act === 'domrm'){
+    if (/✗/.test(t)) toast(first || 'Не вышло');
+    else if (/уже в списке/.test(t)) toast('Этот сайт уже был в списке');
+    else if (act === 'domadd') toast(/поедет через прокси/.test(t) ? 'Добавил, адреса уже в прокси' : 'Добавил — см. проверку ниже');
+    else toast('Убрал из списка');
+    refresh();
+  }
+  if (act === 'domcheck'){
+    const it = (t.match(/^ИТОГ:\s*(.*)$/m) || [,''])[1];
+    if (it) toast(it);
+  }
   if (act === 'tunestart'){
     if (/✓ подбор запущен/.test(t)){
       toast('Подбор пошёл. Обход пока отключён');
       if (tunePoll) clearInterval(tunePoll);
       tuneTick();
       tunePoll = setInterval(tuneTick, 5000);
-    } else toast(t.split('\n')[0] || 'Не запустилось');
+    } else toast(first || 'Не запустилось');
   }
   if (act === 'tunestop'){
     if (tunePoll){ clearInterval(tunePoll); tunePoll = null; }
@@ -703,34 +831,79 @@ async function run(act, v){
   }
 }
 
+/* фоновое обновление статуса — тихое, ничего не блокирует */
 async function refresh(){
-  const t = await call('status');
-  if (t) readStatus(t);
+  try {
+    const t = await api('status');
+    if (t) readStatus(t);
+  } catch(e){ /* сеть моргнула — покажем на следующем тике */ }
 }
 
+/* ---------- вкладки ---------- */
+const tabs = $('#tabs');
+function selectTab(name, animate = true){
+  tabs.querySelectorAll('button').forEach(b => {
+    const on = b.dataset.tab === name;
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) movePill(b, animate);
+  });
+  document.querySelectorAll('section[data-panel]').forEach(s => {
+    s.hidden = s.dataset.panel !== name;
+  });
+  try { localStorage.setItem('tab', name); } catch(e){}
+  if (name === 'nodes' && !$('#nodelist').children.length) run('nodes');
+}
+function movePill(btn, animate){
+  const pill = $('#pill');
+  const prev = pill.style.transition;
+  if (!animate) pill.style.transition = 'none';
+  pill.style.width = btn.offsetWidth + 'px';
+  pill.style.transform = `translateX(${btn.offsetLeft - 0}px)`;
+  if (!animate) requestAnimationFrame(() => { pill.style.transition = prev; });
+}
+tabs.querySelectorAll('button').forEach(b => {
+  b.onclick = () => selectTab(b.dataset.tab);
+});
+addEventListener('resize', () => {
+  const on = tabs.querySelector('button[aria-selected="true"]');
+  if (on) movePill(on, false);
+});
+
+/* ---------- привязка кнопок ---------- */
 document.querySelectorAll('button[data-act]').forEach(b => {
   b.onclick = () => {
     const src = b.dataset.src;
     let v = b.dataset.v;
     if (src){
       v = $('#' + src).value.trim();
-      if (!v) return toast('Сначала впиши домен');
+      if (!v) { toast('Сначала впиши адрес сайта'); $('#' + src).focus(); return; }
     }
-    run(b.dataset.act, v);
+    run(b.dataset.act, v, b);
   };
 });
+$('#dom').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.querySelector('button[data-act="domadd"]').click();
+});
 $('#findclr').onclick = () => { $('#find').value = ''; render(rawOut); };
+$('#outclr').onclick = () => { paint(''); };
 $('#find').addEventListener('input', () => render(rawOut));
 
 (async function init(){
-  const m = await call('meta');
-  if (m){
+  let saved = 'sites';
+  try { saved = localStorage.getItem('tab') || 'sites'; } catch(e){}
+  if (!document.querySelector(`section[data-panel="${saved}"]`)) saved = 'sites';
+  selectTab(saved, false);
+
+  try {
+    const m = await api('meta');
     const g = k => (m.match(new RegExp('^' + k + '=(.*)$', 'm')) || [,''])[1].trim();
     if (g('model')) $('#title').textContent = g('model');
     $('#lan').textContent = g('lan') || '';
-  }
+  } catch(e){ toast('Роутер не отвечает — проверь Wi-Fi'); }
+
   refresh();
-  setInterval(() => { if (!busy && !document.hidden) refresh(); }, 20000);
+  setInterval(() => { if (!userBusy && !document.hidden) refresh(); }, 20000);
+  addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 })();
 </script>
 </body>

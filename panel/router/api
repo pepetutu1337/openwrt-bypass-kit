@@ -30,6 +30,21 @@ DOM_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 
 die() { echo "✗ $1"; exit 0; }
 
+# Из браузера домен приезжает как попало: со схемой, слэшем, www, заглавными,
+# иногда с портом. Приводим к голому имени ДО проверки регуляркой — иначе
+# «https://militarysummary.com/» отлетало как «это не похоже на домен».
+norm_dom() {
+  printf '%s' "$1" |
+    tr 'A-Z' 'a-z' |
+    sed 's|^[[:space:]]*||; s|[[:space:]]*$||
+         s|^[a-z][a-z0-9+.-]*://||
+         s|^[^/@]*@||
+         s|[/?#].*$||
+         s|:[0-9]*$||
+         s|^www\.||
+         s|\.$||'
+}
+
 case "$a" in
   # --- только чтение ---
   status)    exec "$RCTL" status ;;
@@ -83,11 +98,19 @@ case "$a" in
   tgupdate)  exec "$RCTL" telegram-cidr update ;;
   watchdog)  exec "$RCTL" watchdog ;;
   domadd)
-    echo "$v" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
-    exec "$RCTL" domains add "$v" ;;
+    d=$(norm_dom "$v")
+    echo "$d" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
+    [ "$d" = "$v" ] || echo ":: понял как $d"
+    exec "$RCTL" domains add "$d" ;;
   domrm)
-    echo "$v" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
-    exec "$RCTL" domains rm "$v" ;;
+    d=$(norm_dom "$v")
+    echo "$d" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
+    [ "$d" = "$v" ] || echo ":: понял как $d"
+    exec "$RCTL" domains rm "$d" ;;
+  domcheck)
+    d=$(norm_dom "$v")
+    echo "$d" | grep -qE "$DOM_RE" || die "это не похоже на домен: $v"
+    exec "$RCTL" domains check "$d" ;;
 
   *) die "неизвестное действие: ${a:-<пусто>}" ;;
 esac
