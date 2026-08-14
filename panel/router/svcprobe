@@ -1,0 +1,371 @@
+#!/bin/sh
+# svcprobe — живая проверка сервисов по слоям и починка того слоя, который сломан.
+#
+# Зачем: «ютуб виснет» и «сайт не стартует» — это три разные поломки, которые
+# лечатся по-разному. Одно переключение ноды чинит только одну из них:
+#
+#   dns    — имя не резолвится через локальный DoH
+#   route  — резолвится, но идёт не туда (проксируемый мимо ноды или наоборот)
+#   node   — нода мертва (её чинит переключение)
+#   banned — нода жива, но сервис с её адреса не пускает (тоже переключение)
+#   dpi    — прямой трафик режет ТСПУ (лечится стратегией zapret, не нодой)
+#
+# Команды:
+#   svcprobe run     один прогон, печатает строки svc-... и пишет /tmp/svcprobe.out
+#   svcprobe show    последний результат без нового прогона
+#   svcprobe score   прогнать все ноды по проксируемым сервисам (матрица)
+#   svcprobe auto    прогон + переключение ноды, если виноват именно слой ноды
+#   svcprobe log     что автоматика делала
+set -u
+
+CONF=${SVCPROBE_CONF:-/etc/svcprobe.conf}
+OUT=/tmp/svcprobe.out
+SCORE=/tmp/svcprobe.score
+LOG=/tmp/svcprobe.log
+STREAK_DIR=/tmp/svcprobe.streak
+API=${CLASH_API:-127.0.0.1:9090}
+# локальный mixed-инбаунд sing-box: через него проверяем проксируемые сервисы
+SOCKS_PORT=${SINGBOX_SOCKS_PORT:-1180}
+MAXT=${SVCPROBE_TIMEOUT:-8}
+# сколько неудачных прогонов подряд терпим до переключения ноды
+SWITCH_AFTER=${SVCPROBE_SWITCH_AFTER:-2}
+
+mkdir -p "$STREAK_DIR"
+
+logline() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# ---- конфиг по умолчанию ----------------------------------------------------
+# формат: имя|kind|хост|url|минимум_КБ_с|лёгкий_url
+#   kind: direct (должен идти мимо ноды, через zapret) | proxy (через ноду)
+#   минимум_КБ_с: 0 — скорость не меряем, хватает кода ответа.
+#   шестое поле (необязательно): лёгкий адрес для частых проверок из крона
+#     Для ютуба именно скорость и есть диагноз: страница открывается всегда,
+#     а «виснет» — это когда ТСПУ душит поток. Тянем страницу плеера (~1 МБ),
+#     она идёт тем же путём, что и видео.
+default_conf() {
+  cat <<'EOF'
+youtube|direct|www.youtube.com|https://www.youtube.com/watch?v=aqz-KE-bpKQ|150|https://www.youtube.com/generate_204
+ytcdn|direct|i.ytimg.com|https://i.ytimg.com/generate_204|0
+discord|proxy|discord.com|https://discord.com/api/v9/gateway|0
+telegram|proxy|api.telegram.org|https://api.telegram.org/|0
+claude|proxy|claude.ai|https://claude.ai/robots.txt|0
+chatgpt|proxy|chatgpt.com|https://chatgpt.com/robots.txt|0
+instagram|proxy|www.instagram.com|https://www.instagram.com/robots.txt|0
+EOF
+}
+[ -f "$CONF" ] || default_conf > "$CONF"
+
+# ---- слои -------------------------------------------------------------------
+resolve() {
+  nslookup "$1" 127.0.0.1 2>/dev/null |
+    awk '/^Address/{print $NF}' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
+    grep -v '^127\.0\.0\.1$' | head -1
+}
+
+in_proxyset() { nft get element inet fw4 proxy4 "{ $1 }" >/dev/null 2>&1; }
+
+# нода жива вообще? (не про конкретный сервис — только сама труба)
+node_alive() {
+  curl -s -m 10 "http://$API/proxies/auto/delay?url=http://www.gstatic.com/generate_204&timeout=5000" |
+    grep -q '"delay"'
+}
+
+active_node() {
+  sel=$(curl -s -m 4 "http://$API/proxies/proxy" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p')
+  if [ "$sel" = auto ]; then
+    curl -s -m 4 "http://$API/proxies/auto" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p'
+  else
+    echo "$sel"
+  fi
+}
+
+all_nodes() {
+  curl -s -m 4 "http://$API/proxies/proxy" |
+    sed -n 's/.*"all": *\[\([^]]*\)\].*/\1/p' | tr -d '"' | tr ',' ' '
+}
+
+# ---- один сервис ------------------------------------------------------------
+probe_one() {
+  name=$1; kind=$2; host=$3; url=$4; minkb=${5:-0}
+  light=${6:-}
+  # Замер скорости качает ~1 МБ. В частом кроне это лишний трафик, поэтому
+  # там ставим SVCPROBE_SKIP_SPEED=1: меряем только доступность и по лёгкому
+  # адресу, если он задан шестым полем конфига.
+  if [ "${SVCPROBE_SKIP_SPEED:-0}" = 1 ]; then
+    minkb=0
+    [ -n "$light" ] && url=$light
+  fi
+
+  ip=$(resolve "$host")
+  if [ -z "$ip" ]; then
+    echo "svc $name bad dns имя не резолвится через локальный DNS"
+    return 1
+  fi
+
+  # маршрут: проксируемый обязан быть в proxy4, прямой — обязан НЕ быть.
+  # Прямой сервис, уехавший в ноду, — классическая причина «ютуб тормозит».
+  if [ "$kind" = proxy ]; then
+    in_proxyset "$ip" || {
+      echo "svc $name bad route $ip мимо ноды (домен не в списке проксируемых?)"
+      return 1
+    }
+  else
+    if in_proxyset "$ip"; then
+      echo "svc $name bad route $ip уехал в ноду, а должен идти напрямую"
+      return 1
+    fi
+  fi
+
+  # замер скорости требует времени на прокачку, короткая проверка — нет
+  [ "$minkb" -gt 0 ] 2>/dev/null && tmo=$((MAXT * 4)) || tmo=$MAXT
+
+  # Трафик САМОГО роутера через ноду не заворачивается: nft-редирект ловит
+  # только то, что роутер пересылает из LAN. Поэтому проксируемые сервисы
+  # проверяем через локальный socks самого sing-box — это тот же путь, что
+  # у клиента в доме. Прямые сервисы, наоборот, идут обычным curl.
+  [ "$kind" = proxy ] && via="-x socks5h://127.0.0.1:$SOCKS_PORT" || via=""
+
+  r=$(curl -sS $via -o /dev/null -m "$tmo" -w '%{http_code} %{time_total} %{speed_download}' "$url" 2>/dev/null) ||
+    r="000 $tmo 0"
+  set -- $r
+  code=$1; t=$2; sp=$3
+  ms=$(awk -v x="$t" 'BEGIN{printf "%d", x*1000}')
+  kb=$(( ${sp%%.*} / 1024 ))
+
+  if [ "$code" = "000" ]; then
+    if [ "$kind" = proxy ]; then
+      if node_alive; then
+        echo "svc $name bad banned нода жива, но сервис с неё не открывается"
+      else
+        echo "svc $name bad node нода не отвечает"
+      fi
+    else
+      echo "svc $name bad dpi прямой запрос не проходит — дело в стратегии zapret"
+    fi
+    return 1
+  fi
+
+  # душилово: соединение живо, но поток режут. Ноду тут дёргать бессмысленно —
+  # трафик прямой, виновата стратегия zapret.
+  if [ "$minkb" -gt 0 ] 2>/dev/null && [ "$kb" -lt "$minkb" ]; then
+    if [ "$kind" = direct ]; then
+      echo "svc $name slow dpi $kb КБ/с при норме $minkb — поток душат"
+    else
+      echo "svc $name slow node $kb КБ/с при норме $minkb — нода тянет медленно"
+    fi
+    return 1
+  fi
+
+  if [ "$ms" -gt 3000 ]; then
+    echo "svc $name slow ${kind} код $code, $ms мс — тянет, но еле-еле"
+    return 1
+  fi
+
+  det="код $code, $ms мс"
+  [ "$minkb" -gt 0 ] 2>/dev/null && det="$det, $kb КБ/с"
+  echo "svc $name ok - $det"
+  return 0
+}
+
+# ---- прогон -----------------------------------------------------------------
+# Пишем результат строка за строкой прямо в $OUT, а не во временный файл:
+# панель читает этот же файл во время прогона и показывает живой прогресс.
+cmd_run() {
+  : > "$OUT"
+  echo ":: проверка сервисов $(date '+%H:%M:%S')" >> "$OUT"
+  node=$(active_node)
+  echo "нода: ${node:-?}" >> "$OUT"
+
+  grep -vE '^\s*#|^\s*$' "$CONF" | while IFS='|' read -r name kind host url minkb light; do
+    [ -n "${url:-}" ] || continue
+    echo "· проверяю $name…" >> "$OUT"
+    line=$(probe_one "$name" "$kind" "$host" "$url" "${minkb:-0}" "${light:-}")
+    rc=$?
+    # свежую строку кладём на место «проверяю»
+    sed -i '$d' "$OUT"
+    echo "$line" >> "$OUT"
+    # серия неудач подряд — по ней решаем, дёргать ли ноду
+    f="$STREAK_DIR/$name"
+    if [ $rc -eq 0 ]; then : > "$f"; else printf 'x' >> "$f"; fi
+  done
+
+  echo ":: готово" >> "$OUT"
+  cat "$OUT"
+}
+
+cmd_run_bg() {
+  if [ -f /tmp/svcprobe.run.pid ] && kill -0 "$(cat /tmp/svcprobe.run.pid 2>/dev/null)" 2>/dev/null; then
+    echo "проверка уже идёт"; return 0
+  fi
+  ( cmd_run > /dev/null 2>&1; rm -f /tmp/svcprobe.run.pid ) &
+  echo $! > /tmp/svcprobe.run.pid
+  echo ":: проверка сервисов пошла, прогресс появится здесь"
+}
+
+cmd_show() { [ -f "$OUT" ] && cat "$OUT" || echo "проверок ещё не было — svcprobe run"; }
+
+streak() { [ -f "$STREAK_DIR/$1" ] && wc -c < "$STREAK_DIR/$1" | tr -d ' ' || echo 0; }
+
+# ---- матрица нода × сервис --------------------------------------------------
+# Ходим через clash API: он умеет мерить задержку конкретной ноды до
+# конкретного URL, не трогая селектор и не роняя текущие соединения.
+cmd_score() {
+  : > "$SCORE"
+  nodes=$(all_nodes)
+  [ -n "$nodes" ] || { echo "clash API $API молчит"; return 1; }
+  svcs=$(grep -vE '^\s*#|^\s*$' "$CONF" | awk -F'|' '$2=="proxy"' | wc -l)
+  ncnt=$(echo "$nodes" | tr ' ' '\n' | grep -vc '^auto$')
+  echo "total $((svcs * ncnt))" > "$SCORE.total"
+
+  grep -vE '^\s*#|^\s*$' "$CONF" | while IFS='|' read -r name kind host url minkb; do
+    [ "$kind" = proxy ] || continue
+    for n in $nodes; do
+      [ "$n" = auto ] && continue
+      ms=$(curl -s -m 12 "http://$API/proxies/$n/delay?url=$url&timeout=6000" |
+             sed -n 's/.*"delay": *\([0-9][0-9]*\).*/\1/p')
+      echo "score $name $n ${ms:--} $(date +%s)" >> "$SCORE"
+    done
+  done
+  echo "done" >> "$SCORE.total"
+  cmd_scorelog
+}
+
+# фоновый вариант: матрица идёт минутами, панель не должна висеть на запросе
+cmd_score_bg() {
+  if [ -f /tmp/svcprobe.score.pid ] && kill -0 "$(cat /tmp/svcprobe.score.pid 2>/dev/null)" 2>/dev/null; then
+    echo "матрица уже считается"; return 0
+  fi
+  ( cmd_score > /dev/null 2>&1; rm -f /tmp/svcprobe.score.pid ) &
+  echo $! > /tmp/svcprobe.score.pid
+  echo ":: матрица нода×сервис считается в фоне, прогресс появится здесь"
+}
+
+cmd_scorelog() {
+  [ -f "$SCORE" ] || { echo "матрица ещё не считалась"; return 0; }
+  total=$(sed -n 's/^total //p' "$SCORE.total" 2>/dev/null | head -1)
+  have=$(grep -c '^score ' "$SCORE" 2>/dev/null || echo 0)
+  if grep -q '^done' "$SCORE.total" 2>/dev/null; then
+    echo ":: матрица готова ($have замеров)"
+  else
+    echo ":: считаю матрицу: $have из ${total:-?}"
+  fi
+  echo ""
+  # нода в строках, сервисы столбцами — так видно, кто по какому сервису живой
+  awk '$1=="score"{v[$3" "$2]=$4; svc[$2]=1; nod[$3]=1}
+       END{
+         printf "%-12s", "нода"
+         for (s in svc) printf "%-11s", s
+         printf "\n"
+         for (n in nod){
+           printf "%-12s", n
+           for (s in svc){ x=v[n" "s]; printf "%-11s", (x=="" ? "·" : (x=="-" ? "нет" : x)) }
+           printf "\n"
+         }
+       }' "$SCORE"
+}
+
+# Нода, которая тянет ВСЕ перечисленные сервисы, с лучшей суммарной задержкой.
+# Нода, промолчавшая хотя бы по одному из них, не годится: переключаться на неё
+# значит чинить телеграм и ломать инстаграм.
+best_common() {
+  [ -f "$SCORE" ] || return 1
+  now=$(date +%s)
+  want=$*
+  cnt=$(echo "$want" | wc -w)
+  awk -v want="$want" -v now="$now" -v cnt="$cnt" '
+    $1=="score" && (now-$5)<7200 {
+      if (index(" "want" ", " "$2" ")) {
+        if ($4=="-") bad[$3]=1
+        else { sum[$3]+=$4; have[$3]++ }
+      }
+    }
+    END{
+      best=""; bs=0
+      for (n in sum)
+        if (!(n in bad) && have[n]==cnt && (best=="" || sum[n]<bs)) { best=n; bs=sum[n] }
+      print best
+    }' "$SCORE"
+}
+
+# лучшая нода для сервиса по свежей матрице (не старше 2 часов)
+best_for() {
+  svc=$1; now=$(date +%s)
+  [ -f "$SCORE" ] || return 1
+  awk -v s="$svc" -v now="$now" '$1=="score" && $2==s && $4!="-" && (now-$5)<7200 {print $4" "$3}' "$SCORE" |
+    sort -n | head -1 | awk '{print $2}'
+}
+
+# ---- автоматика -------------------------------------------------------------
+cmd_auto() {
+  # Сначала поднимаем упавшие службы: проверять сервисы при мёртвом sing-box
+  # бессмысленно, а переключать ноду — тем более.
+  for p in "sing-box:sing-box" "zapret:nfqws" "dnsmasq:dnsmasq" "https-dns-proxy:https-dns-proxy"; do
+    s=${p%%:*}; bin=${p##*:}
+    pidof "$bin" >/dev/null 2>&1 && continue
+    logline "служба $s лежала — поднимаю"
+    /etc/init.d/"$s" restart >/dev/null 2>&1
+    sleep 2
+  done
+
+  cmd_run > /dev/null
+  cur=$(active_node)
+  acted=0
+
+  # Сначала разбираем поломки, которые нодой не лечатся, и копим список тех,
+  # что лечатся. Решение по ноде принимаем ОДНО на всех: если чинить каждый
+  # сервис отдельно, телеграм тянет селектор на одну ноду, инстаграм на другую,
+  # и они гоняют переключатель по кругу.
+  need="/tmp/svcprobe.need"; : > "$need"
+
+  grep -E '^svc ' "$OUT" | while read -r _ name state layer rest; do
+    [ "$state" = ok ] && continue
+    s=$(streak "$name")
+    case "$layer" in
+      dpi)
+        # ноду дёргать бессмысленно: трафик и так идёт мимо неё
+        [ "$s" -ge "$SWITCH_AFTER" ] &&
+          logline "$name: слой dpi ($s подряд) — нужна новая стратегия zapret, ноду не трогаю"
+        ;;
+      route)
+        logline "$name: слой route — $rest"
+        ;;
+      node|banned)
+        [ "$s" -ge "$SWITCH_AFTER" ] && echo "$name $layer $s" >> "$need"
+        ;;
+    esac
+  done
+
+  [ -s "$need" ] || { [ -f "$LOG" ] && tail -5 "$LOG" || echo "автоматике нечего чинить"; return 0; }
+
+  # матрица могла протухнуть — освежаем перед выбором
+  [ -f "$SCORE" ] || cmd_score > /dev/null 2>&1
+  b=$(best_common $(awk '{print $1}' "$need"))
+  if [ -z "$b" ] || [ "$b" = "$cur" ]; then
+    cmd_score > /dev/null 2>&1
+    b=$(best_common $(awk '{print $1}' "$need"))
+  fi
+
+  broken=$(awk '{printf "%s ", $1}' "$need")
+  if [ -n "$b" ] && [ "$b" != "$cur" ]; then
+    r=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://$API/proxies/proxy" -d "{\"name\":\"$b\"}")
+    if [ "$r" = 204 ]; then
+      logline "лежат: ${broken}— переключил ноду $cur -> $b (работает по всем этим сервисам)"
+    else
+      logline "лежат: ${broken}— не смог переключить на $b (код $r)"
+    fi
+  else
+    logline "лежат: ${broken}— замены нет, ни одна нода не тянет весь этот набор"
+  fi
+
+  [ -f "$LOG" ] && tail -5 "$LOG" || echo "автоматике пока нечего было делать"
+}
+
+case "${1:-run}" in
+  run)   [ "${2:-}" = bg ] && cmd_run_bg || cmd_run ;;
+  show)  cmd_show ;;
+  score) [ "${2:-}" = bg ] && cmd_score_bg || cmd_score ;;
+  scorelog) cmd_scorelog ;;
+  auto)  cmd_auto ;;
+  log)   tail -40 "$LOG" 2>/dev/null || echo "лог пуст" ;;
+  *) echo "svcprobe run|show|score [bg]|scorelog|auto|log"; exit 1 ;;
+esac

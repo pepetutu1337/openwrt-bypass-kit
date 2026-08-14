@@ -46,14 +46,24 @@ cmd_start() {
     /etc/init.d/zapret stop >> "$LOG" 2>&1
     sleep 1
     echo ":: запускаю blockcheck (домен $dom, уровень $level)" >> "$LOG"
+    # Имена переменных — как в blockcheck.sh: IPVS (не IPV6),
+    # ENABLE_HTTPS_TLS12/TLS13 (ENABLE_HTTPS такой переменной нет вообще).
+    # TLS 1.3 включаем явно: ТСПУ с 2026 фильтрует его отдельно от 1.2,
+    # а дефолт blockcheck — 0, то есть его бы не проверили.
+    # Дефолтный CURL_MAX_TIME=2 на замедленной линии врёт: и baseline, и все
+    # стратегии одинаково упираются в таймаут 2002 мс, на выходе «ничего не
+    # работает». 5 секунд отделяет реально мёртвое от просто медленного.
     BATCH=1 \
+    CURL_MAX_TIME="${TUNE_CURL_TIME:-5}" \
     DOMAINS="$dom" \
     SCANLEVEL="$level" \
     REPEATS=2 \
+    PARALLEL=0 \
     ENABLE_HTTP=0 \
-    ENABLE_HTTPS=1 \
+    ENABLE_HTTPS_TLS12=1 \
+    ENABLE_HTTPS_TLS13=1 \
     ENABLE_HTTP3=0 \
-    IPV6=0 \
+    IPVS=4 \
     SKIP_TPWS=1 \
     sh "$BC" >> "$LOG" 2>&1
     rc=$?
@@ -84,7 +94,10 @@ cmd_status() {
   [ -f "$LOG" ] || return 0
   cur=$(grep -E "^(\*|::)" "$LOG" | tail -1)
   [ -n "$cur" ] && echo "сейчас: $cur"
-  echo "проверок сделано: $(grep -c "^\* " "$LOG" 2>/dev/null || echo 0)"
+  # "* …" — фаза (их единицы), "- …" — конкретная проверяемая стратегия.
+  # Считать надо вторые, иначе счётчик стоит на месте и кажется, что подбор завис.
+  echo "фаз пройдено: $(grep -c "^\* " "$LOG" 2>/dev/null || echo 0)"
+  echo "стратегий проверено: $(grep -c "^- " "$LOG" 2>/dev/null || echo 0)"
   echo "найдено рабочих: $(cmd_result | grep -c . 2>/dev/null || echo 0)"
 }
 

@@ -132,7 +132,10 @@ EOF
       log:{level:"warn",timestamp:true},
       experimental:{clash_api:{external_controller:"127.0.0.1:9090"}},
       inbounds:[
-        {type:"redirect",tag:"redir",listen:"0.0.0.0",listen_port:$rport,sniff:true,sniff_override_destination:false},
+        # sniff_override_destination:true — соединение уходит на ноду доменом,
+        # а не локально нарезолвленным адресом. Иначе проксируемый сайт может
+        # не открываться из-за протухшего или подменённого локального ответа DNS.
+        {type:"redirect",tag:"redir",listen:"0.0.0.0",listen_port:$rport,sniff:true,sniff_override_destination:true},
         {type:"socks",tag:"diag",listen:"127.0.0.1",listen_port:$sport}
       ],
       outbounds:
@@ -297,7 +300,11 @@ zapret_apply() {
     echo "NFQWS_ENABLE=1"
     echo "NFQWS_PORTS_TCP=${ZAPRET_PORTS_TCP:-80,443}"
     echo "NFQWS_PORTS_UDP=${ZAPRET_PORTS_UDP:-443,50000-50099}"
-    echo "MODE_FILTER=autohostlist"
+    # hostlist, а не autohostlist: автосписок учится ТОЛЬКО на сломавшихся
+    # соединениях, поэтому каждый новый заблокированный домен обязан сначала
+    # отвалиться, а ложные срабатывания (долгие вебсокеты, VK long-poll)
+    # копятся сотнями и заставляют дурить трафик, который дурить не надо.
+    echo "MODE_FILTER=${ZAPRET_MODE_FILTER:-hostlist}"
     echo "DISABLE_IPV6=1"
     printf 'NFQWS_OPT="%s"\n' "$ZAPRET_NFQWS_OPT"
     echo "# <<< netkit"

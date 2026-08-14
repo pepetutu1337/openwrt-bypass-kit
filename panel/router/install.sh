@@ -48,6 +48,7 @@ if [ "$MODE" = uninstall ]; then
     /etc/init.d/uhttpd restart >/dev/null 2>&1
     [ -x /etc/init.d/rctl-bot ] && { /etc/init.d/rctl-bot stop >/dev/null 2>&1; /etc/init.d/rctl-bot disable >/dev/null 2>&1; }
     rm -rf /www/panel /etc/uhttpd-panel.auth /usr/sbin/rctl /usr/sbin/zapret-tune \
+           /usr/sbin/zapret-sweep /usr/sbin/svcprobe /etc/svcprobe.conf \
            /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
     crontab -l 2>/dev/null | grep -v "rctl fix" | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
@@ -65,6 +66,13 @@ say "заливаю подборщик стратегии zapret"
 $SSH 'cat > /usr/sbin/zapret-tune.new' < "$DIR/router/zapret-tune"
 $SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/zapret-tune && chmod +x /usr/sbin/zapret-tune' \
   || { echo "✗ zapret-tune не прошёл проверку синтаксиса"; exit 1; }
+
+say "заливаю свип стратегий и пробер сервисов"
+for f in zapret-sweep svcprobe; do
+  $SSH "cat > /usr/sbin/$f.new" < "$DIR/router/$f"
+  $SSH "sh -n /usr/sbin/$f.new && mv /usr/sbin/$f.new /usr/sbin/$f && chmod +x /usr/sbin/$f" \
+    || { echo "✗ $f не прошёл проверку синтаксиса"; exit 1; }
+done
 
 say "заливаю панель"
 $SSH 'mkdir -p /www/panel/cgi-bin /www/panel/fonts'
@@ -111,11 +119,15 @@ $SSH "
 "
 
 if [ "$CRON" = 1 ]; then
-  say "включаю авто-починку каждые 15 минут"
+  # rctl fix сюда больше не ставим: он переключал ноду по одному пингу и дрался
+  # со svcprobe, который выбирает ноду по доказанной работе сервисов.
+  say "включаю авто-проверку сервисов"
   $SSH '
-    ( crontab -l 2>/dev/null | grep -v "rctl fix"; echo "*/15 * * * * /usr/sbin/rctl fix >/dev/null 2>&1" ) | crontab -
+    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe"
+      echo "*/5 * * * * SVCPROBE_SKIP_SPEED=1 /usr/sbin/svcprobe auto >/dev/null 2>&1"
+      echo "7 * * * * /usr/sbin/svcprobe score >/dev/null 2>&1" ) | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
-    echo "✓ крон: */15 rctl fix"
+    echo "✓ крон: */5 svcprobe auto, ежечасно матрица нод"
   '
 fi
 

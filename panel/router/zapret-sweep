@@ -1,0 +1,178 @@
+#!/bin/sh
+# zapret-sweep — выбор стратегии по скорости, а не по «открылось/не открылось».
+#
+# Зачем отдельно от zapret-tune: blockcheck отвечает только «доступно/недоступно».
+# На душилове ТСПУ страница открывается всегда, поэтому blockcheck честно
+# выдаёт полсотни «рабочих» стратегий, из которых видео тянет одна-две.
+# Свип гонит кандидатов по очереди на живом zapret и меряет реальную скорость
+# на странице плеера (~1 МБ, тот же путь, что и видео).
+#
+#   zapret-sweep start [N]   прогнать N кандидатов (по умолчанию 12)
+#   zapret-sweep status      прогресс
+#   zapret-sweep result      таблица «скорость — стратегия»
+#   zapret-sweep stop        прервать и вернуть исходный конфиг
+#
+# Конфиг всегда возвращается: и штатно, и по trap при обрыве.
+set -u
+
+CFG=/opt/zapret/config
+OUT=/tmp/zapret-sweep.out
+STATE=/tmp/zapret-sweep.state
+PIDF=/tmp/zapret-sweep.pid
+ORIG=/tmp/zapret-sweep.orig
+VIDEO=${SWEEP_URL:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}
+
+# Кандидаты: берём из результата blockcheck, но прореживаем по семействам —
+# двадцать вариантов одного fooling меряют одно и то же и жрут время.
+candidates() {
+  /usr/sbin/zapret-tune result 2>/dev/null |
+    sed 's/[[:space:]]*$//' |
+    awk '!seen[$0]++' |
+    awk '{
+      fam=""
+      for (i=1;i<=NF;i++) if ($i ~ /^--dpi-desync=/) fam=$i
+      key=fam
+      for (i=1;i<=NF;i++) if ($i ~ /^--dpi-desync-(split-pos|fooling|autottl)=/) key=key" "$i
+      if (!(key in seenkey)) { seenkey[key]=1; print }
+    }'
+}
+
+# одна проба скорости: КБ/с, 0 если не открылось
+speed() {
+  r=$(curl -sS -m 40 -o /tmp/sweep.page -w '%{http_code} %{speed_download}' "$VIDEO" 2>/dev/null) || r="000 0"
+  set -- $r
+  [ "$1" = 200 ] || { echo "0 $1"; return; }
+  echo "$(( ${2%%.*} / 1024 )) $1"
+}
+
+apply_strategy() {
+  awk -v strat="$1" '
+    /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; next }
+    { print }
+  ' "$ORIG" > /tmp/sweep-config.new
+  grep -q "^--filter-tcp=443 " /tmp/sweep-config.new || return 1
+  cp /tmp/sweep-config.new "$CFG"
+  /etc/init.d/zapret restart >/dev/null 2>&1
+  sleep 4
+  pidof nfqws >/dev/null 2>&1
+}
+
+restore() {
+  [ -f "$ORIG" ] && cp "$ORIG" "$CFG"
+  /etc/init.d/zapret restart >/dev/null 2>&1
+}
+
+cmd_start() {
+  n=${1:-12}
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+    echo "свип уже идёт (pid $(cat "$PIDF"))"; exit 1
+  fi
+  cp "$CFG" "$ORIG"
+  cp "$CFG" "$CFG.bak-sweep-$(date +%Y%m%d-%H%M%S)"
+  : > "$OUT"
+  echo "start $(date +%s) $n" > "$STATE"
+
+  cands=$(candidates | head -"$n")
+  [ -n "$cands" ] || { echo "нет кандидатов — сначала прогони подбор (zapret-tune start)"; exit 1; }
+
+  echo "✓ свип запущен: $(echo "$cands" | wc -l) кандидатов, ~50 с на каждого"
+  echo "  обход остаётся включённым, меняется только стратегия TCP 443"
+
+  (
+    trap 'restore; echo "aborted $(date +%s)" > "$STATE"; rm -f "$PIDF"' INT TERM
+
+    # базовая точка: текущая стратегия, чтобы было с чем сравнивать
+    base=$(speed); set -- $base
+    echo "base $1 $2 (текущая стратегия)" >> "$OUT"
+
+    echo "$cands" | while read -r s; do
+      [ -n "$s" ] || continue
+      if apply_strategy "$s"; then
+        r=$(speed); set -- $r
+        kb=$1; code=$2
+        # вторая проба: линия флапает, одиночный замер врёт
+        r2=$(speed); set -- $r2
+        [ "$1" -gt "$kb" ] 2>/dev/null && { kb=$1; code=$2; }
+        echo "cand $kb $code $s" >> "$OUT"
+      else
+        echo "cand 0 cfg $s" >> "$OUT"
+      fi
+    done
+
+    # победитель: максимум КБ/с среди кандидатов
+    best=$(grep '^cand ' "$OUT" | sort -k2 -nr | head -1)
+    bkb=$(echo "$best" | awk '{print $2}')
+    basekb=$(grep '^base ' "$OUT" | awk '{print $2}')
+    bstrat=$(echo "$best" | cut -d' ' -f4-)
+
+    if [ -n "$bkb" ] && [ "$bkb" -gt "$basekb" ] 2>/dev/null; then
+      apply_strategy "$bstrat" || restore
+      echo "winner $bkb $bstrat" >> "$OUT"
+      echo "done $(date +%s) applied" > "$STATE"
+    else
+      restore
+      echo "winner - текущая стратегия не хуже кандидатов" >> "$OUT"
+      echo "done $(date +%s) kept" > "$STATE"
+    fi
+    rm -f "$PIDF" /tmp/sweep.page
+  ) &
+  echo $! > "$PIDF"
+}
+
+cmd_status() {
+  [ -f "$STATE" ] || { echo "свип ни разу не запускался"; exit 0; }
+  set -- $(cat "$STATE")
+  st=$1; ts=${2:-0}; tail3=${3:-}
+  # в строке start третье поле — сколько кандидатов, в done — что сделали
+  case "$st" in start) total=$tail3 ;; *) total=$(grep -c '^cand ' "$OUT" 2>/dev/null || echo '?') ;; esac
+  el=$(( $(date +%s) - ts ))
+  running=0
+  [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null && running=1
+  case "$st" in
+    start) [ "$running" = 1 ] && echo "фаза: идёт свип" || echo "фаза: оборвался (процесса нет)" ;;
+    done)  echo "фаза: готово ($(case "$tail3" in applied) echo "стратегия заменена" ;; kept) echo "оставил прежнюю" ;; *) echo "$tail3" ;; esac))" ;;
+    aborted) echo "фаза: прерван" ;;
+  esac
+  echo "прошло: $((el / 60)) мин $((el % 60)) с"
+  echo "проверено кандидатов: $(grep -c '^cand ' "$OUT" 2>/dev/null || echo 0) из $total"
+  b=$(grep '^base ' "$OUT" 2>/dev/null | awk '{print $2}')
+  [ -n "$b" ] && echo "было: $b КБ/с"
+  best=$(grep '^cand ' "$OUT" 2>/dev/null | sort -k2 -nr | head -1 | awk '{print $2}')
+  [ -n "$best" ] && echo "лучшее пока: $best КБ/с"
+  w=$(grep '^winner ' "$OUT" 2>/dev/null)
+  [ -n "$w" ] && echo "итог: $(echo "$w" | cut -d' ' -f2-)"
+}
+
+cmd_result() {
+  [ -f "$OUT" ] || { echo "результатов нет"; exit 0; }
+  b=$(grep '^base ' "$OUT" | awk '{print $2}')
+  echo "было: ${b:-?} КБ/с"
+  echo ""
+  grep '^cand ' "$OUT" | sort -k2 -nr |
+    while read -r _ kb code strat; do
+      printf '%6s КБ/с  %-4s %s\n' "$kb" "$code" "$strat"
+    done
+  w=$(grep '^winner ' "$OUT")
+  [ -n "$w" ] && { echo ""; echo "итог: $(echo "$w" | cut -d' ' -f2-)"; }
+}
+
+cmd_stop() {
+  if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+    kill -TERM "$(cat "$PIDF")" 2>/dev/null
+    sleep 1
+    restore
+    rm -f "$PIDF"
+    echo "aborted $(date +%s)" > "$STATE"
+    echo "✓ свип прерван, конфиг возвращён"
+  else
+    echo "свип не идёт"
+  fi
+}
+
+case "${1:-status}" in
+  start)  shift; cmd_start "$@" ;;
+  status) cmd_status ;;
+  result) cmd_result ;;
+  stop)   cmd_stop ;;
+  *) echo "zapret-sweep start [N] | status | result | stop"; exit 1 ;;
+esac

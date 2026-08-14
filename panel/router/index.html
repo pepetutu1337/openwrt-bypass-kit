@@ -285,20 +285,77 @@ input::placeholder{color:var(--tx3)}
 }
 .tuneline code{flex:1;min-width:0;overflow-wrap:anywhere;background:none;padding:0;color:var(--tx2)}
 
-/* ---------- вывод ---------- */
-.outbox{margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--line)}
-.outbar{display:flex;gap:.5rem;align-items:center;margin-bottom:.7rem}
-.outbar input{flex:1 1 8rem}
+/* ---------- сервисы по слоям ---------- */
+.svcgrid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));
+  gap:.5rem;margin-top:1.1rem;
+}
+.svccard{
+  border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--surface);padding:.55rem .7rem;min-width:0;
+  animation:rise var(--base) var(--spring) both;
+}
+.svccard b{display:flex;align-items:center;gap:.4rem;font-size:.9rem;font-weight:600}
+.svccard b i{width:.45rem;height:.45rem;border-radius:50%;flex:none;background:var(--tx3)}
+.svccard.ok b i{background:var(--ok)}
+.svccard.slow b i{background:var(--accent)}
+.svccard.bad b i{background:var(--bad)}
+.svccard span{display:block;color:var(--tx3);font-size:.76rem;margin-top:.15rem;
+              overflow-wrap:anywhere}
+.svccard.bad span,.svccard.slow span{color:var(--tx2)}
+
+/* ---------- вывод: отдельный док, вне потока страницы ----------
+   Раньше вывод жил внизу страницы обычным блоком: каждое обновление меняло
+   его высоту и дёргало вёрстку. Док прибит к краю окна — страница под ним
+   не пересчитывается вообще. */
+#dock{
+  position:fixed;z-index:30;
+  top:0;right:0;height:100dvh;width:clamp(21rem,34vw,34rem);
+  display:flex;flex-direction:column;
+  background:var(--surface);border-left:1px solid var(--line);
+  box-shadow:var(--shadow);
+  transform:translateX(101%);
+  transition:transform var(--base) var(--spring);
+  will-change:transform;
+}
+#dock.on{transform:none}
+#scrim{
+  position:fixed;inset:0;z-index:29;background:rgba(0,0,0,.35);
+  opacity:0;pointer-events:none;transition:opacity var(--fast) linear;
+}
+#scrim.on{opacity:1;pointer-events:auto}
+/* на широком экране затемнение не нужно: док не перекрывает колонку */
+@media (min-width:52.0625rem){ #scrim{display:none} }
+.dockhead{
+  display:flex;align-items:center;gap:.5rem;flex:none;
+  padding:.85rem var(--pad);border-bottom:1px solid var(--line-soft);
+}
+.dockhead h3{margin:0;font-size:.95rem;flex:1;min-width:0}
+.dockhead .x{flex:none;padding:.4rem .7rem;line-height:1}
+.outbar{display:flex;gap:.5rem;align-items:center;flex:none;padding:.7rem var(--pad) 0}
+.outbar input{flex:1 1 6rem;min-width:0}
 .outbar button{flex:none}
 pre{
-  margin:0;padding:1rem;border:1px solid var(--line);border-radius:var(--r-box);
-  background:var(--surface);overflow:auto;max-height:55vh;max-width:100%;
+  margin:0;padding:1rem var(--pad) calc(1rem + env(safe-area-inset-bottom));
+  flex:1;min-height:0;overflow:auto;
+  background:none;border:0;
   font:.8125rem/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
   white-space:pre-wrap;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;
   -webkit-overflow-scrolling:touch;
-  animation:rise var(--base) var(--spring) both;
+  overscroll-behavior:contain;
 }
-pre:empty{display:none}
+.dockempty{color:var(--tx3);font-size:.9rem;margin:0;padding:1rem var(--pad)}
+/* кнопка вызова дока: висит в углу, ничего не сдвигает */
+#dockbtn{
+  position:fixed;z-index:28;right:var(--pad);
+  bottom:calc(1.2rem + env(safe-area-inset-bottom));
+  box-shadow:var(--shadow);
+}
+#dockbtn.hide{opacity:0;pointer-events:none;transform:translateY(120%)}
+#dockbtn i{
+  display:inline-block;width:.5rem;height:.5rem;border-radius:50%;
+  background:var(--accent);margin-left:.15rem;vertical-align:middle;
+}
 .empty{color:var(--tx3);font-size:.9rem;margin:0}
 .l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--accent)}
 .l-head{color:var(--tx);font-weight:600} .l-dim{color:var(--tx3)}
@@ -334,6 +391,23 @@ pre:empty{display:none}
   body::before{display:none}
 }
 
+/* узкий экран: док становится шторкой снизу — сбоку на телефоне читать нечем */
+@media (max-width:52rem){
+  #dock{
+    top:auto;bottom:0;right:0;left:0;width:auto;height:min(68dvh,34rem);
+    border-left:0;border-top:1px solid var(--line);
+    border-radius:var(--r-box) var(--r-box) 0 0;
+    transform:translateY(101%);
+  }
+  #dock.on{transform:none}
+  /* ручка шторки */
+  .dockhead::before{
+    content:"";position:absolute;top:.4rem;left:50%;transform:translateX(-50%);
+    width:2.25rem;height:.25rem;border-radius:99px;background:var(--line);
+  }
+  .dockhead{position:relative;padding-top:1.1rem}
+}
+
 @media (max-width:34rem){
   :root{--pad:1rem}
   header .lan{display:none}
@@ -345,7 +419,7 @@ pre:empty{display:none}
   .node .ms{width:3.6rem}
   .outbar{flex-wrap:wrap}
   .outbar input{flex:1 1 100%}
-  pre{font-size:.75rem;padding:.85rem}
+  pre{font-size:.75rem}
 }
 </style>
 </head>
@@ -369,6 +443,14 @@ pre:empty{display:none}
     <div class="acts">
       <button class="big primary" data-act="fix">Починить</button>
       <button class="big" data-act="yttest">Проверить ютуб</button>
+    </div>
+
+    <!-- по сервисам видно не «что-то сломалось», а какой именно слой сломался -->
+    <div class="svcgrid" id="svcgrid" hidden></div>
+    <div class="row" style="margin-top:.6rem">
+      <button data-act="svcrun">Проверить сервисы</button>
+      <button data-act="svcscore">Матрица нод</button>
+      <button data-act="svclog">Что делала автоматика</button>
     </div>
   </section>
 
@@ -467,6 +549,19 @@ pre:empty{display:none}
       </div>
       <div id="tunebox"></div>
     </div>
+
+    <div class="block">
+      <h3>Выбор стратегии по скорости</h3>
+      <p class="sub">Подбор выше отвечает только «открылось или нет». На душилове страница
+        открывается всегда, поэтому «рабочих» стратегий находятся десятки, а видео тянет
+        одна-две. Свип гоняет кандидатов по очереди на живом обходе и меряет реальную
+        скорость. Обход при этом <b>не отключается</b>, побеждает самая быстрая.</p>
+      <div class="row">
+        <button data-act="sweepstart" data-v="8">Свип, 8 кандидатов</button>
+        <button data-act="sweepstart" data-v="16">Свип, 16 кандидатов</button>
+        <button class="danger" data-act="sweepstop">Прервать</button>
+      </div>
+    </div>
   </section>
 
   <!-- ---------------- ЕЩЁ ---------------- -->
@@ -512,17 +607,24 @@ pre:empty{display:none}
     </div>
   </section>
 
-  <div class="outbox">
-    <div class="outbar" id="outbar" hidden>
-      <input id="find" placeholder="поиск по выводу" autocapitalize="off" autocomplete="off"
-             aria-label="Поиск по выводу">
-      <button data-clear="find">Сброс</button>
-      <button data-clear="out">Очистить</button>
-    </div>
-    <p class="empty" id="empty">Вывод команд появится здесь.</p>
-    <pre id="out"></pre>
-  </div>
 </main>
+
+<button id="dockbtn" class="hide" aria-controls="dock" aria-expanded="false">Вывод<i></i></button>
+<div id="scrim"></div>
+<aside id="dock" aria-label="Вывод команд">
+  <div class="dockhead">
+    <h3>Вывод</h3>
+    <button class="x" id="dockclose" aria-label="Закрыть вывод">✕</button>
+  </div>
+  <div class="outbar" id="outbar" hidden>
+    <input id="find" placeholder="поиск по выводу" autocapitalize="off" autocomplete="off"
+           aria-label="Поиск по выводу">
+    <button data-clear="find">Сброс</button>
+    <button data-clear="out">Очистить</button>
+  </div>
+  <p class="dockempty" id="empty">Вывод команд появится здесь.</p>
+  <pre id="out"></pre>
+</aside>
 
 <div id="toast" role="status"></div>
 
@@ -560,16 +662,39 @@ function toast(msg){
   t._t = setTimeout(() => t.classList.remove('show'), 3800);
 }
 
-/* ---------- вывод ---------- */
+/* ---------- вывод (док) ----------
+   Док прибит к краю окна, поэтому обновление текста не двигает страницу.
+   Внутри самого дока следим за двумя вещами: не перерисовывать одинаковое
+   и не сбрасывать позицию прокрутки, если человек листает вывод руками. */
+let lastRender = null;
+
+function dockOpen(on){
+  $('#dock').classList.toggle('on', on);
+  $('#scrim').classList.toggle('on', on);
+  $('#dockbtn').setAttribute('aria-expanded', on ? 'true' : 'false');
+  $('#dockbtn').classList.toggle('hide', on || !rawOut.trim());
+}
+
 function paint(text){
   rawOut = text;
   const has = !!text.trim();
   $('#outbar').hidden = !has;
   $('#empty').hidden = has;
   render(text);
+  if (has) dockOpen(true);
+  else { dockOpen(false); $('#dockbtn').classList.add('hide'); }
 }
+
 function render(text){
   const filter = $('#find').value.trim().toLowerCase();
+  const key = filter + '\u0000' + text;
+  if (key === lastRender) return;          // нечего перерисовывать — не мигаем
+  lastRender = key;
+
+  // «прилипание» к низу: если человек не отлистывал вверх, держим хвост
+  const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  const keepTop = out.scrollTop;
+
   const frag = document.createDocumentFragment();
   text.split('\n').forEach(line => {
     if (filter && !line.toLowerCase().includes(filter)) return;
@@ -582,8 +707,59 @@ function render(text){
     else if (/^\s*·/.test(line)) d.className = 'l-dim';
     frag.appendChild(d);
   });
-  out.innerHTML = '';
-  out.appendChild(frag);
+  out.replaceChildren(frag);
+
+  out.scrollTop = stick ? out.scrollHeight : keepTop;
+}
+
+/* ---------- сервисы по слоям ----------
+   Строки вида «svc claude bad banned нода жива, но…» превращаем в плитки.
+   Слой важнее самого факта поломки: он говорит, что чинить. */
+const LAYER = {
+  dns:'DNS не резолвит', route:'едет не туда', node:'нода мертва',
+  banned:'нода в бане у сервиса', dpi:'режет ТСПУ', direct:'напрямую', proxy:'через ноду'
+};
+function readSvc(t){
+  const rows = [];
+  t.split('\n').forEach(l => {
+    const m = l.match(/^svc\s+(\S+)\s+(ok|slow|bad)\s+(\S+)\s*(.*)$/);
+    if (m) rows.push({name:m[1], state:m[2], layer:m[3], detail:m[4]});
+  });
+  const box = $('#svcgrid');
+  // пустой ответ (роутер моргнул, файла ещё нет) не должен стирать плитки:
+  // лучше показать чуть устаревшее, чем мигать пустотой
+  if (!rows.length){ if (!box.children.length) box.hidden = true; return; }
+  box.hidden = false;
+  // «медленно» и «мертво» — разные диагнозы одного слоя, подпись не должна врать
+  const SLOW = {node:'нода тянет медленно', dpi:'поток душит ТСПУ'};
+  box.innerHTML = rows.map(r => {
+    const sub = r.state === 'ok' ? r.detail
+              : r.state === 'slow' ? (SLOW[r.layer] || 'еле тянет')
+              : (LAYER[r.layer] || r.layer);
+    return `<div class="svccard ${r.state}"><b><i></i>${esc(r.name)}</b>
+            <span title="${esc(r.detail)}">${esc(sub)}</span></div>`;
+  }).join('');
+}
+
+/* ---------- прослеживание долгих операций ----------
+   Долгие штуки (подбор, свип, матрица нод, проверка сервисов) уходят на
+   роутере в фон и пишут прогресс в файл. Панель тянет этот файл и печатает
+   в консоль — видно, что процесс жив, и на чём он сейчас. */
+let follower = null;
+function followStop(){ if (follower){ clearInterval(follower); follower = null; workOff(); } }
+function follow(pollAct, doneRe, workLabel, everyMs){
+  followStop();
+  workOn(workLabel);
+  const tick = async () => {
+    let t;
+    try { t = await api(pollAct); } catch(e){ return; }
+    if (t === null) return;
+    paint(t);
+    if (/^svc /m.test(t)) readSvc(t);
+    if (doneRe.test(t)) followStop();
+  };
+  tick();
+  follower = setInterval(tick, everyMs || 2500);
 }
 
 /* ---------- индикатор долгой работы ---------- */
@@ -595,7 +771,9 @@ const WORKNAME = {
   logs:'читаю лог', info:'собираю инфо', restart:'перезапускаю службу',
   domadd:'добавляю сайт', domrm:'убираю сайт', domcheck:'разбираю сайт',
   watchdog:'гоняю сторож', tgcount:'считаю сети', tgupdate:'обновляю сети',
-  quic:'переключаю QUIC', geocount:'считаю geoblock', twitch:'проверяю твич'
+  quic:'переключаю QUIC', geocount:'считаю geoblock', twitch:'проверяю твич',
+  svcrun:'проверяю сервисы', svcscore:'меряю матрицу нод', svclog:'читаю лог автоматики',
+  sweepstart:'меряю стратегии скоростью', sweepstop:'прерываю свип'
 };
 let workTimer = null;
 function workOn(act){
@@ -726,13 +904,13 @@ async function tuneTick(){
   const el = (t.match(/^прошло:\s*(.*)$/m) || [,''])[1];
   const cur = (t.match(/^сейчас:\s*(.*)$/m) || [,''])[1];
   const found = (t.match(/^найдено рабочих:\s*(\d+)/m) || [,'0'])[1];
-  const checks = (t.match(/^проверок сделано:\s*(\d+)/m) || [,'0'])[1];
+  const checks = (t.match(/^стратегий проверено:\s*(\d+)/m) || [,'0'])[1];
   const done = /готово|прерван|оборвался/.test(phase);
 
   $('#tunebox').innerHTML = `
     <div class="tuneline" style="margin-top:1rem">
       ${done ? '' : '<i class="spin"></i>'}
-      <code>${esc(phase)} · ${esc(el)}, проверок ${checks}, найдено ${found}</code>
+      <code>${esc(phase)} · ${esc(el)}, стратегий ${checks}, найдено ${found}</code>
     </div>
     ${cur ? `<div class="tuneline"><code>${esc(cur)}</code></div>` : ''}`;
 
@@ -771,6 +949,15 @@ async function run(act, v, btn){
   if (act === 'nodes') readNodes(t);
 
   const first = (t.split('\n').find(l => l.trim()) || '').replace(/^[✓✗·!]\s*/, '');
+
+  // долгие операции: дальше показываем прогресс, а не одну строку «запущено»
+  const DONE = /фаза: (готово|прерван|оборвался)/;
+  if (act === 'sweepstart') follow('sweeplog', DONE, 'sweepstart', 4000);
+  if (act === 'svcrun')     follow('svcshow', /^:: готово/m, 'svcrun', 2000);
+  if (act === 'svcscore')   follow('svcscorelog', /матрица готова/, 'svcscore', 3000);
+  if (act === 'tunestart')  follow('tuneprogress', DONE, 'tunestart', 4000);
+  if (act === 'sweepstop' || act === 'tunestop') followStop();
+  if (act === 'svcshow' || act === 'svcrun') readSvc(t);
 
   if (act === 'fix'){
     toast(/чинить было нечего/.test(t) ? 'Всё и так работало' : 'Починил, проверяй');
@@ -825,6 +1012,11 @@ async function refresh(){
     const t = await api('status');
     if (t) readStatus(t);
   } catch(e){ /* сеть моргнула, покажем на следующем тике */ }
+  // плитки сервисов берём из готового файла — это просто cat, роутер не грузит
+  try {
+    const s = await api('svcshow');
+    if (s) readSvc(s);
+  } catch(e){}
 }
 
 /* ---------- вкладки ---------- */
@@ -880,6 +1072,14 @@ document.querySelectorAll('button[data-clear]').forEach(b => {
   };
 });
 $('#find').addEventListener('input', () => render(rawOut));
+
+/* ---------- док вывода ---------- */
+$('#dockbtn').onclick = () => dockOpen(true);
+$('#dockclose').onclick = () => dockOpen(false);
+$('#scrim').onclick = () => dockOpen(false);
+addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('#dock').classList.contains('on')) dockOpen(false);
+});
 
 (async function init(){
   let saved = 'sites';

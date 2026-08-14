@@ -69,8 +69,33 @@ case "$a" in
       *) die "неизвестный лог: $v" ;;
     esac ;;
 
+  # --- живая проверка сервисов (долгое уходит в фон, панель тянет прогресс) ---
+  svcshow)     exec /usr/sbin/svcprobe show ;;
+  svcrun)      exec /usr/sbin/svcprobe run bg ;;
+  svcscore)    exec /usr/sbin/svcprobe score bg ;;
+  svcscorelog) exec /usr/sbin/svcprobe scorelog ;;
+  svclog)      exec /usr/sbin/svcprobe log ;;
+
+  # --- свип стратегий по скорости ---
+  sweepstatus) exec /usr/sbin/zapret-sweep status ;;
+  sweepresult) exec /usr/sbin/zapret-sweep result ;;
+  sweeplog)
+    # статус + текущая таблица: одним куском, чтобы панель просто печатала
+    /usr/sbin/zapret-sweep status
+    echo ""
+    exec /usr/sbin/zapret-sweep result ;;
+  sweepstop)   exec /usr/sbin/zapret-sweep stop ;;
+  sweepstart)
+    echo "$v" | grep -qE '^[0-9]{1,2}$' || v=12
+    exec /usr/sbin/zapret-sweep start "$v" ;;
+
   # --- подбор стратегии zapret ---
   tunestatus) exec /usr/sbin/zapret-tune status ;;
+  tuneprogress)
+    # статус + хвост живого лога blockcheck: видно, что перебор реально идёт
+    /usr/sbin/zapret-tune status
+    echo ""
+    exec /usr/sbin/zapret-tune log ;;
   tuneresult) exec /usr/sbin/zapret-tune result ;;
   tunelog)    exec /usr/sbin/zapret-tune log ;;
   tunestop)   exec /usr/sbin/zapret-tune stop ;;
