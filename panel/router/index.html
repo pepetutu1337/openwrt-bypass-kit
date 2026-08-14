@@ -65,7 +65,8 @@
   --base:200ms;              /* Data-Dense: ничего дольше 200 мс */
   --pad:1rem;
   --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,monospace;
-  --row:1.9rem;              /* высота строки таблицы */
+  --row:2.15rem;             /* высота строки таблицы */
+  --dockw:clamp(21rem,32vw,30rem);   /* ширина дока вывода */
 }
 @media (prefers-color-scheme: light){
   :root{
@@ -93,6 +94,8 @@
 html{-webkit-text-size-adjust:100%;overflow-x:hidden;scroll-behavior:smooth}
 body{
   margin:0;overflow-x:hidden;
+  /* когда док открыт, страница ужимается, а не прячется под ним */
+  transition:padding-right var(--base) var(--spring);
   font:400 .9375rem/1.45 Onest,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
   font-variant-numeric:tabular-nums;
   color:var(--tx);
@@ -128,7 +131,7 @@ header h1{
 header .lan{color:var(--tx3);font-size:.78rem;font-variant-numeric:tabular-nums}
 #hnode{
   display:inline-flex;align-items:center;gap:.35rem;flex:none;max-width:9rem;
-  border:1px solid var(--line);border-radius:999px;padding:.28rem .6rem .28rem .5rem;
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:.28rem .6rem .28rem .5rem;
   font-size:.84rem;font-weight:600;letter-spacing:-.005em;background:var(--surface);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;
   transition:transform 100ms ease-out,border-color var(--fast) var(--spring);
@@ -232,11 +235,11 @@ button.primary.busy::after{border-color:rgba(127,127,127,.4);border-top-color:va
 /* ---------- полоса серверов ----------
    Видна всегда. Пока пинг неизвестен — флаг обесцвечен и цифры нет. */
 .strip{margin:0 0 1.1rem}
-.nodesbar{display:flex;flex-wrap:wrap;gap:.28rem}
+.nodesbar{display:flex;flex-wrap:wrap;gap:.35rem}
 .nchip{
-  display:inline-flex;align-items:center;gap:.3rem;
-  border:1px solid var(--line);border-radius:999px;padding:.2rem .5rem .2rem .4rem;
-  background:var(--surface);font-size:.76rem;cursor:pointer;max-width:100%;
+  display:inline-flex;align-items:center;gap:.4rem;
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:.34rem .62rem .34rem .5rem;
+  background:var(--surface);font-size:.86rem;cursor:pointer;max-width:100%;
   transition:transform 100ms ease-out,border-color var(--fast) var(--spring),
              background var(--fast) var(--spring);
 }
@@ -244,7 +247,7 @@ button.primary.busy::after{border-color:rgba(127,127,127,.4);border-top-color:va
 .nchip:hover{border-color:color-mix(in srgb,var(--tx) 28%,transparent)}
 .nchip .f{filter:grayscale(1) opacity(.45)}
 .nchip .n{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.nchip .p{color:var(--tx3);font-family:var(--mono);font-size:.7rem}
+.nchip .p{color:var(--tx3);font-family:var(--mono);font-size:.76rem}
 .nchip.known .f{filter:none}
 .nchip.fast .p{color:var(--ok)}
 .nchip.mid  .p{color:var(--tx2)}
@@ -298,12 +301,12 @@ input::placeholder{color:var(--tx3)}
 }
 .nrow:nth-child(even){background:var(--surface-2)}
 .nrow:hover{background:var(--accent-soft)}
-.nrow .flag{font-size:.95rem;line-height:1;text-align:center}
+.nrow .flag{font-size:1.05rem;line-height:1;text-align:center}
 .nrow .nm{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
-.nrow .ms{font-family:var(--mono);font-size:.78rem;text-align:right;min-width:4.2rem}
+.nrow .ms{font-family:var(--mono);font-size:.82rem;text-align:right;min-width:4.2rem}
 .nrow .bar{height:3px;border-radius:2px;background:var(--ok);min-width:2px;justify-self:end}
 .nrow .bar.mid{background:var(--warn)} .nrow .bar.slow{background:var(--bad)}
-.nrow .svcs{font-family:var(--mono);font-size:.7rem;color:var(--tx3);text-align:right;
+.nrow .svcs{font-family:var(--mono);font-size:.76rem;color:var(--tx3);text-align:right;
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nrow.dead{opacity:.55}
 .nrow.dead .ms{color:var(--bad)}
@@ -334,19 +337,19 @@ input::placeholder{color:var(--tx3)}
    капсула, что у серверов, с коротким значением — ширина стабильная. */
 /* Сетка, а не флекс: число колонок зависит только от ширины экрана, поэтому
    строки не перескакивают, когда значение внутри капсулы стало длиннее. */
-.svcgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9rem,1fr));
-         gap:.3rem;margin:.7rem 0 0}
+.svcgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10.5rem,1fr));
+         gap:.35rem;margin:.8rem 0 0}
 .svcchip{
-  display:inline-flex;align-items:center;gap:.35rem;
-  border:1px solid var(--line);border-radius:999px;
-  padding:.22rem .55rem .22rem .45rem;background:var(--surface);
-  font-size:.78rem;line-height:1.5;white-space:nowrap;cursor:default;
+  display:inline-flex;align-items:center;gap:.4rem;
+  border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:.36rem .65rem .36rem .55rem;background:var(--surface);
+  font-size:.86rem;line-height:1.5;white-space:nowrap;cursor:default;
   min-width:0;overflow:hidden;
 }
 .svcchip .nm{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .svcchip .v{margin-left:auto}
-.svcchip i{width:.4rem;height:.4rem;border-radius:50%;background:var(--tx3);flex:none}
-.svcchip .v{font-family:var(--mono);font-size:.72rem;color:var(--tx3)}
+.svcchip i{width:.45rem;height:.45rem;border-radius:50%;background:var(--tx3);flex:none}
+.svcchip .v{font-family:var(--mono);font-size:.78rem;color:var(--tx3)}
 .svcchip.ok i{background:var(--ok)}
 .svcchip.slow i{background:var(--warn)}
 .svcchip.slow .v{color:var(--warn)}
@@ -359,7 +362,7 @@ input::placeholder{color:var(--tx3)}
    не пересчитывается вообще. */
 #dock{
   position:fixed;z-index:30;
-  top:0;right:0;height:100dvh;width:clamp(21rem,34vw,34rem);
+  top:0;right:0;height:100dvh;width:var(--dockw);
   display:flex;flex-direction:column;
   background:var(--surface);border-left:1px solid var(--line);
   box-shadow:var(--shadow);
@@ -373,8 +376,12 @@ input::placeholder{color:var(--tx3)}
   opacity:0;pointer-events:none;transition:opacity var(--fast) linear;
 }
 #scrim.on{opacity:1;pointer-events:auto}
-/* на широком экране затемнение не нужно: док не перекрывает колонку */
-@media (min-width:52.0625rem){ #scrim{display:none} }
+/* На широком экране док не накрывает страницу, а отодвигает её: раньше он
+   ложился поверх текста правой половины. Затемнение там не нужно. */
+@media (min-width:52.0625rem){
+  #scrim{display:none}
+  body.dockon{padding-right:calc(var(--dockw) + var(--pad))}
+}
 .dockhead{
   display:flex;align-items:center;gap:.5rem;flex:none;
   padding:.85rem var(--pad);border-bottom:1px solid var(--line-soft);
@@ -777,6 +784,7 @@ let lastRender = null;
 
 function dockOpen(on){
   $('#dock').classList.toggle('on', on);
+  document.body.classList.toggle('dockon', on);   // страница ужимается, не прячется
   $('#scrim').classList.toggle('on', on);
   $('#dockbtn').setAttribute('aria-expanded', on ? 'true' : 'false');
   $('#dockbtn').classList.toggle('hide', on || !rawOut.trim());
