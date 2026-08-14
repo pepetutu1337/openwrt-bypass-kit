@@ -145,13 +145,16 @@ cmd_apply() {
   before=$(probe)
   echo "до применения: $before"
 
-  awk -v strat="$s" '
-    /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; next }
+  # только строка внутри NFQWS_OPT: такие же строки есть в TPWS_OPT и
+  # TPWS_SOCKS_OPT, а у tpws другой синтаксис — слепая замена их портит
+  if ! awk -v strat="$s" '
+    /^NFQWS_OPT="/ { inopt=1; print; next }
+    inopt && /^"/  { inopt=0; print; next }
+    inopt && /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; done=1; next }
     { print }
-  ' "$CFG.bak-$ts" > /tmp/zapret-config.new
-
-  if ! grep -q "^--filter-tcp=443 " /tmp/zapret-config.new; then
-    echo "✗ не нашёл строку --filter-tcp=443 в конфиге — не трогаю"
+    END { if (!done) exit 3 }
+  ' "$CFG.bak-$ts" > /tmp/zapret-config.new; then
+    echo "✗ не нашёл строку --filter-tcp=443 внутри NFQWS_OPT — не трогаю"
     rm -f /tmp/zapret-config.new "$CFG.bak-$ts"
     exit 1
   fi

@@ -45,12 +45,17 @@ speed() {
   echo "$(( ${2%%.*} / 1024 )) $1"
 }
 
+# Меняем строку 443 ТОЛЬКО внутри NFQWS_OPT. Строки с тем же началом есть
+# ещё в TPWS_OPT и TPWS_SOCKS_OPT — у tpws другой синтаксис, и слепая замена
+# по всему файлу их портит (ловил на живом конфиге).
 apply_strategy() {
   awk -v strat="$1" '
-    /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; next }
+    /^NFQWS_OPT="/ { inopt=1; print; next }
+    inopt && /^"/  { inopt=0; print; next }
+    inopt && /^--filter-tcp=443 / { print "--filter-tcp=443 " strat " <HOSTLIST> --new"; done=1; next }
     { print }
-  ' "$ORIG" > /tmp/sweep-config.new
-  grep -q "^--filter-tcp=443 " /tmp/sweep-config.new || return 1
+    END { if (!done) exit 3 }
+  ' "$ORIG" > /tmp/sweep-config.new || return 1
   cp /tmp/sweep-config.new "$CFG"
   /etc/init.d/zapret restart >/dev/null 2>&1
   sleep 4
