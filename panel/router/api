@@ -59,6 +59,7 @@ case "$a" in
   info)      exec "$RCTL" info ;;
   meta)      exec "$RCTL" meta ;;
   nodes)     exec "$RCTL" nodes list ;;
+  nodenames) exec "$RCTL" nodes names ;;
   domains)   exec "$RCTL" domains list ;;
   geolist)   exec "$RCTL" geoblock list ;;
   geocount)  exec "$RCTL" geoblock count ;;

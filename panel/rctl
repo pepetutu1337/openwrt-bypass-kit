@@ -173,22 +173,41 @@ if [ -n "$miss" ]; then
   done
 fi
 echo ""
+# Машинная строка для панели + строки таблицы. Колонки пробелами тут не
+# выровнять: busybox считает ширину в байтах и кириллица уводит столбец.
+echo "active: $active"
+echo "selector: $sel"
+echo "tbl|сервер|пинг|состояние"
 up=0; down=0
 for n in $all; do
   [ "$n" = "auto" ] && continue
   ms=$(cat "$tmp/$n" 2>/dev/null)
-  m="  "; [ "$n" = "$active" ] && m="=>"
   if [ -n "$ms" ]; then
     q="хорошо"; [ "$ms" -gt 250 ] 2>/dev/null && q="ок"; [ "$ms" -gt 450 ] 2>/dev/null && q="медленно"
-    printf "%s %-6s %5s ms   %s\n" "$m" "$n" "$ms" "$q"; up=$((up+1))
+    [ "$n" = "$active" ] && q="$q, работаем через него"
+    echo "tbl|$n|$ms мс|$q"; up=$((up+1))
   else
-    printf "%s %-6s %8s   %s\n" "$m" "$n" "-" "нет ответа"; down=$((down+1))
+    echo "tbl|$n|нет|молчит"; down=$((down+1))
   fi
 done
 rm -rf "$tmp"
 echo ""
-echo "живых: $up, молчат: $down.  => активная: $active (selector=$sel; auto→$au)"
-echo "закрепить: имя ноды в поле выше; вернуть авто — кнопкой."
+echo "живых: $up, молчат: $down. Работаем через: $active (selector=$sel; auto -> $au)"
+'
+
+# только имена серверов и активный — без замеров, чтобы панель могла
+# показать полосу серверов сразу, не гоняя пинги на каждое открытие
+R_NODE_NAMES='
+API="'"$API"'"
+b="http://$API"
+sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+au=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
+active=$sel; [ "$sel" = "auto" ] && active=$au
+all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+[ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
+echo "active: $active"
+echo "selector: $sel"
+for n in $all; do [ "$n" = "auto" ] || echo "node: $n"; done
 '
 
 # алиас: то же самое (свежий пинг всех)
@@ -686,8 +705,9 @@ case "$cmd" in
       test) remote "$R_NODE_TEST" ;;
       auto) remote "$R_NODE_AUTO" ;;
       best) remote "$R_NODES_BEST" ;;
+      names) remote "$R_NODE_NAMES" ;;
       use)  shift; [ $# -ge 1 ] || { echo "rctl nodes use ИМЯ"; exit 1; }; remote "$R_NODE_USE" "$1" ;;
-      *) echo "nodes list|test|best|use ИМЯ|auto"; exit 1 ;;
+      *) echo "nodes list|names|test|best|use ИМЯ|auto"; exit 1 ;;
     esac ;;
   domains)
     case "${1:-list}" in

@@ -203,21 +203,47 @@ button.primary.busy::after{border-color:rgba(127,127,127,.4);border-top-color:va
   pointer-events:none;
 }
 
-/* ---------- работа ---------- */
-#work{
-  display:none;align-items:center;gap:.65rem;margin-bottom:1.25rem;
-  padding:.6rem .85rem;border:1px solid var(--line);border-radius:var(--r-ctl);
-  background:var(--surface);font-size:.9rem;color:var(--tx2);
-  animation:rise var(--base) var(--spring) both;
-}
-#work.on{display:flex}
+/* ---------- работа ----------
+   Индикатор живёт в шапке вывода, а не отдельным блоком посреди страницы:
+   раньше он появлялся между кнопками и раздвигал их на время прогона. */
 .spin{
   width:.9rem;height:.9rem;border-radius:50%;flex:none;
   border:2px solid color-mix(in srgb,var(--tx) 15%,transparent);border-top-color:var(--accent);
   animation:spin .7s linear infinite;
 }
-#worktx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#worksec{color:var(--tx3);font-variant-numeric:tabular-nums;flex:none}
+#docksec{color:var(--tx3);font-variant-numeric:tabular-nums;flex:none;font-size:.8rem}
+
+/* ---------- подпись группы ---------- */
+.lbl{
+  margin:1.4rem 0 .5rem;font-size:.78rem;font-weight:600;color:var(--tx3);
+}
+.lbl span{font-weight:400}
+.checks{gap:.45rem}
+
+/* ---------- полоса серверов ----------
+   Видна всегда. Пока пинг неизвестен — флаг обесцвечен и цифры нет. */
+.strip{margin:0 0 1.75rem}
+.nodesbar{display:flex;flex-wrap:wrap;gap:.4rem}
+.nchip{
+  display:inline-flex;align-items:center;gap:.35rem;
+  border:1px solid var(--line);border-radius:999px;padding:.3rem .6rem .3rem .45rem;
+  background:var(--surface);font-size:.82rem;cursor:pointer;max-width:100%;
+  transition:transform 100ms ease-out,border-color var(--fast) var(--spring),
+             background var(--fast) var(--spring);
+}
+.nchip:active{transform:scale(.97)}
+.nchip:hover{border-color:color-mix(in srgb,var(--tx) 28%,transparent)}
+.nchip .f{filter:grayscale(1) opacity(.45)}
+.nchip .n{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nchip .p{color:var(--tx3);font-variant-numeric:tabular-nums}
+.nchip.known .f{filter:none}
+.nchip.fast .p{color:var(--ok)}
+.nchip.mid  .p{color:var(--tx2)}
+.nchip.slow .p{color:var(--accent)}
+.nchip.dead{opacity:.5}
+.nchip.dead .p{color:var(--bad)}
+.nchip.act{border-color:var(--accent);background:var(--accent-soft)}
+.nchip.act .n{font-weight:700}
 @keyframes rise{from{opacity:0;transform:translateY(.35rem)}to{opacity:1;transform:none}}
 
 /* ---------- блоки ----------
@@ -372,6 +398,9 @@ pre{
 .empty{color:var(--tx3);font-size:.9rem;margin:0}
 .l-ok{color:var(--ok)} .l-bad{color:var(--bad)} .l-warn{color:var(--accent)}
 .l-head{color:var(--tx);font-weight:600} .l-dim{color:var(--tx3)}
+/* подпись прогона: что и когда гоняли */
+.l-stamp{color:var(--accent);font-weight:700;margin:.7rem 0 .35rem}
+#out > .l-stamp:first-child{margin-top:0}
 
 /* ---------- уведомление ---------- */
 #toast{
@@ -453,19 +482,30 @@ pre{
     <p id="verdictsub">Смотрю, что с обходом.</p>
     <p class="meter" id="meter"></p>
 
+    <!-- ОДНА главная кнопка. Остальное — проверки: они ничего не меняют и
+         стоят ниже отдельной группой, чтобы не соперничать с «Починить». -->
     <div class="acts">
       <button class="big primary" data-act="fix">Починить</button>
-      <button class="big" data-act="yttest">Проверить ютуб</button>
     </div>
 
     <!-- по сервисам видно не «что-то сломалось», а какой именно слой сломался -->
     <div class="svcgrid" id="svcgrid" hidden></div>
-    <div class="row" style="margin-top:.6rem">
-      <button data-act="svcrun">Проверить сервисы</button>
-      <button data-act="svcscore">Матрица нод</button>
-      <button data-act="ytlog">Дневник ютуба</button>
+
+    <p class="lbl">Проверить</p>
+    <div class="row checks">
+      <button data-act="svcrun">Сервисы</button>
+      <button data-act="nodes">Серверы</button>
+      <button data-act="yttest">Ютуб</button>
+      <button data-act="doctor">Всё сразу</button>
       <button data-act="svclog">Что делала автоматика</button>
     </div>
+  </section>
+
+  <!-- Серверы видно всегда: пока пинги не мерены — флаги серые и без цифр,
+       после проверки те же плитки получают пинг и цвет. -->
+  <section class="strip">
+    <p class="lbl">Серверы обхода <span id="nodeshint"></span></p>
+    <div class="nodesbar" id="nodesbar"></div>
   </section>
 
   <nav class="tabs" id="tabs" role="tablist" aria-label="Разделы пульта">
@@ -476,11 +516,6 @@ pre{
     <button role="tab" data-tab="more" aria-selected="false">Ещё</button>
   </nav>
 
-  <div id="work">
-    <i class="spin"></i>
-    <span id="worktx">идёт работа</span>
-    <span id="worksec">0 с</span>
-  </div>
 
   <!-- ---------------- САЙТЫ ---------------- -->
   <section data-panel="sites">
@@ -653,7 +688,9 @@ pre{
 <div id="scrim"></div>
 <aside id="dock" aria-label="Вывод команд">
   <div class="dockhead">
-    <h3>Вывод</h3>
+    <i class="spin" id="dockspin" hidden></i>
+    <h3 id="docktitle">Вывод</h3>
+    <span id="docksec"></span>
     <button class="x" id="dockclose" aria-label="Закрыть вывод">✕</button>
   </div>
   <div class="outbar" id="outbar" hidden>
@@ -715,6 +752,19 @@ function dockOpen(on){
   $('#dockbtn').classList.toggle('hide', on || !rawOut.trim());
 }
 
+/* Каждый вывод подписан: что гоняли и когда. Без этого через пять прогонов
+   в доке лежит простыня, и непонятно, к чему она относится. */
+function titleOf(act){
+  const n = WORKNAME[act] || act || 'вывод';
+  return n[0].toUpperCase() + n.slice(1);
+}
+function stamp(act){
+  const title = titleOf(act);
+  $('#docktitle').textContent = title;
+  const t = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  return `== ${title} · ${t} ==\n`;
+}
+
 function paint(text){
   rawOut = text;
   const has = !!text.trim();
@@ -739,6 +789,8 @@ function render(text){
   let tbl = null;                              // текущая таблица, если идёт блок tbl|
   text.split('\n').forEach(line => {
     if (filter && !line.toLowerCase().includes(filter)) return;
+    // машинные строки для панели человеку в консоли не нужны
+    if (/^(active|selector):/.test(line)) return;
 
     // строки «tbl|a|b|c» собираем в настоящую таблицу: выравнивать колонки
     // пробелами бессмысленно, ширина символа в моношрифте не равна ширине
@@ -778,6 +830,7 @@ function render(text){
     if (/^\s*[✓●]|running|ГОТОВО|ИТОГ/.test(line)) d.className = 'l-ok';
     else if (/^\s*[✗×]|stopped|НЕ |не отвечает|не работает|ошибка/i.test(line)) d.className = 'l-bad';
     else if (/^\s*!/.test(line)) d.className = 'l-warn';
+    else if (/^==\s/.test(line)) d.className = 'l-stamp';
     else if (/^===|^::/.test(line)) d.className = 'l-head';
     else if (/^\s*·/.test(line)) d.className = 'l-dim';
     frag.appendChild(d);
@@ -825,11 +878,12 @@ function followStop(){ if (follower){ clearInterval(follower); follower = null; 
 function follow(pollAct, doneRe, workLabel, everyMs){
   followStop();
   workOn(workLabel);
+  const head = stamp(workLabel);      // подпись ставим один раз, а не каждый тик
   const tick = async () => {
     let t;
     try { t = await api(pollAct); } catch(e){ return; }
     if (t === null) return;
-    paint(t);
+    paint(head + t);
     if (/^svc /m.test(t)) readSvc(t);
     if (doneRe.test(t)) followStop();
   };
@@ -853,17 +907,25 @@ const WORKNAME = {
   sweepstart:'меряю стратегии скоростью', sweepstop:'прерываю свип'
 };
 let workTimer = null;
+/* Индикатор и подпись «что прогоняется» живут в шапке вывода. Раньше это был
+   отдельный блок посреди страницы: он возникал между кнопками, раздвигал их
+   на время прогона и пропадал после. */
 function workOn(act){
   const t0 = Date.now();
-  $('#worktx').textContent = WORKNAME[act] || 'работаю';
-  $('#worksec').textContent = '0 с';
-  $('#work').classList.add('on');
+  $('#docktitle').textContent = titleOf(act);
+  $('#dockspin').hidden = false;
+  $('#docksec').textContent = '0 с';
+  dockOpen(true);
   clearInterval(workTimer);
   workTimer = setInterval(() => {
-    $('#worksec').textContent = Math.round((Date.now() - t0) / 1000) + ' с';
+    $('#docksec').textContent = Math.round((Date.now() - t0) / 1000) + ' с';
   }, 500);
 }
-function workOff(){ clearInterval(workTimer); $('#work').classList.remove('on'); }
+function workOff(){
+  clearInterval(workTimer);
+  $('#dockspin').hidden = true;
+  $('#docksec').textContent = '';
+}
 
 /* ---------- запрос к роутеру ----------
    Фоновый опрос статуса не блокирует действия пользователя: общий флаг
@@ -900,6 +962,21 @@ function setNodeChip(node){
     el.classList.remove('upd'); void el.offsetWidth; el.classList.add('upd');
   }
   curNode = node;
+  markActive(node);
+}
+
+/* Ждём, пока роутер реально переключится.
+   Селектор отвечает «204» сразу, но активная нода в статусе меняется позже:
+   при auto её выбирает urltest, при use — sing-box переставляет исходящее
+   соединение. Один refresh сразу после нажатия ловил ещё старое имя, из-за
+   чего панель показывала не тот сервер. Поэтому опрашиваем до совпадения. */
+async function awaitNode(want, tries = 6){
+  for (let i = 0; i < tries; i++){
+    await new Promise(r => setTimeout(r, i ? 900 : 300));
+    await refresh();
+    if (!want || curNode === want) return curNode;
+  }
+  return curNode;
 }
 
 function readStatus(t){
@@ -937,20 +1014,83 @@ function nodeSkeleton(){
   $('#nodelist').innerHTML = Array.from({length:8}, () =>
     '<div class="sk"><i class="a"></i><i class="b"></i><i class="c"></i></div>').join('');
 }
+
+/* Что известно про серверы. Переживает перезагрузку страницы, чтобы полоса
+   серверов была видна всегда: без замеров — серые флаги без цифр, после
+   проверки те же плитки получают пинг и цвет. */
+let nodeState = {list: [], measured: false};
+
+function saveNodes(){ try { localStorage.setItem('nodes', JSON.stringify(nodeState)); } catch(e){} }
+function loadNodes(){
+  try {
+    const v = JSON.parse(localStorage.getItem('nodes') || 'null');
+    if (v && Array.isArray(v.list)) nodeState = v;
+  } catch(e){}
+}
+
+function nodeClass(r){
+  if (!r.known) return '';
+  if (r.ms === null) return 'known dead';
+  return 'known ' + (r.ms < 250 ? 'fast' : r.ms < 450 ? 'mid' : 'slow');
+}
+
+function renderNodesBar(){
+  const box = $('#nodesbar'), hint = $('#nodeshint');
+  if (!nodeState.list.length){
+    box.innerHTML = '<p class="hint">Появятся, как только роутер ответит.</p>';
+    hint.textContent = '';
+    return;
+  }
+  hint.textContent = nodeState.measured
+    ? `· ${nodeState.list.filter(r => r.ms !== null).length} живых из ${nodeState.list.length}`
+    : '· пинги не мерены, нажми «Серверы» в проверках';
+
+  const rows = nodeState.list.slice().sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return (a.ms === null ? 1e9 : a.ms) - (b.ms === null ? 1e9 : b.ms);
+  });
+  box.innerHTML = rows.map(r =>
+    `<button class="nchip ${nodeClass(r)}${r.active ? ' act' : ''}" data-node="${esc(r.name)}">` +
+    `<span class="f">${flagOf(r.name)}</span><span class="n">${esc(r.name)}</span>` +
+    (r.known ? `<span class="p">${r.ms === null ? 'нет' : r.ms + ' мс'}</span>` : '') +
+    `</button>`).join('');
+  box.querySelectorAll('button[data-node]').forEach(b => {
+    b.onclick = () => {
+      const n = b.dataset.node;
+      if (n === curNode) { toast('Через этот сервер и так работаем'); return; }
+      run('use', n, b);
+    };
+  });
+}
+
+/* Разбор вывода rctl nodes: строки таблицы «tbl|имя|пинг|состояние»
+   плюс машинная строка «active: имя». */
 function readNodes(t){
-  const box = $('#nodelist');
+  const active = (t.match(/^active:\s*(\S+)/m) || [,''])[1];
   const rows = [];
   t.split('\n').forEach(l => {
-    const m = l.match(/^(=>|\s\s)\s*(\S+)\s+(\d+|-)\s*(ms)?/);
-    if (m) rows.push({active: m[1] === '=>', name: m[2], ms: m[3] === '-' ? null : +m[3]});
+    if (!l.startsWith('tbl|')) return;
+    const c = l.slice(4).split('|');
+    if (c[0] === 'сервер') return;                       // шапка таблицы
+    const ms = /^[0-9]/.test(c[1] || '') ? parseInt(c[1], 10) : null;
+    rows.push({name: c[0], ms, known: true, active: c[0] === active});
   });
-  if (!rows.length){ box.innerHTML = '<p class="hint">Список серверов пуст. Проверь, поднят ли прокси.</p>'; return; }
+
+  const box = $('#nodelist');
+  if (!rows.length){
+    box.innerHTML = '<p class="hint">Список серверов пуст. Проверь, поднят ли прокси.</p>';
+    return;
+  }
+  nodeState = {list: rows, measured: true};
+  saveNodes();
+  renderNodesBar();
+
   const alive = rows.filter(r => r.ms).map(r => r.ms);
   const worst = alive.length ? Math.max(...alive) : 1;
-  rows.sort((a, b) => (a.ms || 1e9) - (b.ms || 1e9));
+  const sorted = rows.slice().sort((a, b) => (a.ms || 1e9) - (b.ms || 1e9));
 
   const frag = document.createDocumentFragment();
-  rows.forEach((r, i) => {
+  sorted.forEach((r, i) => {
     const el = document.createElement('div');
     el.className = 'node' + (r.active ? ' active' : '') + (r.ms ? '' : ' dead');
     el.style.animationDelay = Math.min(i * 18, 260) + 'ms';
@@ -968,6 +1108,18 @@ function readNodes(t){
   });
   box.innerHTML = '';
   box.appendChild(frag);
+}
+
+/* Активный сервер меняется и без нашего участия (автоматика, urltest) —
+   отмечаем его на полосе, не трогая замеры. */
+function markActive(active){
+  if (!active || !nodeState.list.length) return;
+  let changed = false;
+  nodeState.list.forEach(r => {
+    const a = r.name === active;
+    if (r.active !== a){ r.active = a; changed = true; }
+  });
+  if (changed){ saveNodes(); renderNodesBar(); }
 }
 
 /* ---------- подбор стратегии ---------- */
@@ -1022,7 +1174,7 @@ async function run(act, v, btn){
   if (act === 'nodes') nodeSkeleton();
   const t = await call(act, v, btn);
   if (t === null) return;
-  paint(t);
+  paint(stamp(act) + t);
   if (act === 'nodes') readNodes(t);
 
   const first = (t.split('\n').find(l => l.trim()) || '').replace(/^[✓✗·!]\s*/, '');
@@ -1041,11 +1193,16 @@ async function run(act, v, btn){
     refresh();
   }
   if (act === 'use' || act === 'best' || act === 'auto'){
-    if (/^✓/m.test(t)) toast('Сервер переключён' + (act === 'use' && v ? ': ' + v : ''));
-    else toast(first || 'Не переключилось');
-    await refresh();
-    if (act === 'use' && curNode !== v) toast('Роутер оставил сервер ' + curNode + ', этот не поднялся');
+    if (!/^✓/m.test(t)){ toast(first || 'Не переключилось'); return; }
+    // при «use» знаем, чего ждать; при auto/best — просто ждём, пока имя устаканится
+    const was = curNode;
+    const got = await awaitNode(act === 'use' ? v : null);
+    if (act === 'use' && got !== v)
+      toast('Роутер оставил сервер ' + got + ', этот не поднялся');
+    else if (got && got !== was) toast('Работаем через ' + got);
+    else toast('Сервер прежний: ' + got);
   }
+  if (act === 'fix') await awaitNode(null, 3);
   if (act === 'yttest')
     toast(/ИТОГ: ютуб уехал/.test(t) ? 'Ютуб уехал в прокси, жми «Починить»' : 'С роутера ютуб в порядке');
   if (act === 'restart' || act === 'quic' || act === 'geoupdate') refresh();
@@ -1174,6 +1331,27 @@ addEventListener('keydown', e => {
     if (g('model')) $('#title').textContent = g('model');
     $('#lan').textContent = g('lan') || '';
   } catch(e){ toast('Роутер не отвечает. Проверь Wi-Fi'); }
+
+  // полоса серверов: сначала то, что помним, потом свежие имена с роутера
+  loadNodes();
+  renderNodesBar();
+  try {
+    const t = await api('nodenames');
+    const names = (t.match(/^node: .*$/gm) || []).map(l => l.slice(6).trim());
+    const active = (t.match(/^active:\s*(\S+)/m) || [,''])[1];
+    if (names.length){
+      const old = {};
+      nodeState.list.forEach(r => { old[r.name] = r; });
+      nodeState.list = names.map(n => ({
+        name: n,
+        ms: old[n] ? old[n].ms : null,
+        known: !!(old[n] && old[n].known),
+        active: n === active
+      }));
+      saveNodes();
+      renderNodesBar();
+    }
+  } catch(e){}
 
   refresh();
   setInterval(() => { if (!userBusy && !document.hidden) refresh(); }, 20000);
