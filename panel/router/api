@@ -76,6 +76,11 @@ case "$a" in
   svcscorelog) exec /usr/sbin/svcprobe scorelog ;;
   svclog)      exec /usr/sbin/svcprobe log ;;
 
+  # --- дневник ютуба ---
+  ytlog)    exec /usr/sbin/ytwatch log 30 ;;
+  ytstat)   exec /usr/sbin/ytwatch stat ;;
+  ytsample) exec /usr/sbin/ytwatch sample ;;
+
   # --- свип стратегий по скорости ---
   sweepstatus) exec /usr/sbin/zapret-sweep status ;;
   sweepresult) exec /usr/sbin/zapret-sweep result ;;
@@ -125,6 +130,9 @@ case "$a" in
     esac ;;
   quic)
     case "$v" in on|off) exec "$RCTL" quic "$v" ;; *) die "quic on|off" ;; esac ;;
+  dnsforce)
+    case "$v" in on|off|status|"") exec /usr/sbin/dnsforce "${v:-status}" ;;
+      *) die "dnsforce on|off|status" ;; esac ;;
   geoupdate) exec "$RCTL" geoblock update ;;
   tgupdate)  exec "$RCTL" telegram-cidr update ;;
   watchdog)  exec "$RCTL" watchdog ;;

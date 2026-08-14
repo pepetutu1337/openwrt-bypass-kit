@@ -345,6 +345,19 @@ pre{
   overscroll-behavior:contain;
 }
 .dockempty{color:var(--tx3);font-size:.9rem;margin:0;padding:1rem var(--pad)}
+/* таблицы внутри вывода: широкие скроллятся сами, страницу не растягивают */
+.outtblwrap{overflow-x:auto;margin:.5rem 0 .9rem;-webkit-overflow-scrolling:touch}
+.outtbl{border-collapse:collapse;font-size:.78rem;white-space:nowrap}
+.outtbl th,.outtbl td{
+  padding:.3rem .55rem;text-align:left;border-bottom:1px solid var(--line-soft);
+}
+.outtbl th{
+  color:var(--tx3);font-weight:600;position:sticky;top:0;background:var(--surface);
+  border-bottom:1px solid var(--line);
+}
+.outtbl td:first-child{color:var(--tx);font-weight:600}
+.outtbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.outtbl tr:hover td{background:var(--surface-2)}
 /* кнопка вызова дока: висит в углу, ничего не сдвигает */
 #dockbtn{
   position:fixed;z-index:28;right:var(--pad);
@@ -450,6 +463,7 @@ pre{
     <div class="row" style="margin-top:.6rem">
       <button data-act="svcrun">Проверить сервисы</button>
       <button data-act="svcscore">Матрица нод</button>
+      <button data-act="ytlog">Дневник ютуба</button>
       <button data-act="svclog">Что делала автоматика</button>
     </div>
   </section>
@@ -533,6 +547,32 @@ pre{
       <div class="row" style="margin-top:.5rem">
         <button data-act="quic" data-v="on">Блок QUIC включить</button>
         <button data-act="quic" data-v="off">Блок QUIC выключить</button>
+      </div>
+    </div>
+
+    <div class="block">
+      <h3>Весь DNS через роутер</h3>
+      <p class="sub">Телефон, который спрашивает адреса напрямую у 8.8.8.8 или через
+        «Приватный DNS», получает ответы мимо нашего DoH и мимо списка проксируемых сайтов —
+        и тогда у одного дома всё работает, а у другого нет. Перехват заворачивает такие
+        запросы на роутер, а DoT отклоняет, чтобы телефон откатился на обычный DNS.</p>
+      <div class="row">
+        <button data-act="dnsforce" data-v="status">Как сейчас</button>
+        <button data-act="dnsforce" data-v="on">Включить перехват</button>
+        <button data-act="dnsforce" data-v="off">Выключить</button>
+      </div>
+    </div>
+
+    <div class="block">
+      <h3>Дневник ютуба</h3>
+      <p class="sub">«Работал, потом завис» разовой проверкой не поймать: пока подойдёшь — уже
+        работает. Роутер сам меряет путь до CDN каждые 10 минут и полную скорость раз в два
+        часа, всё складывается в журнал со временем. Настоящая скорость видео меряется, если
+        Дек подлил свежий адрес потока: <code>tools/ytfeed.sh</code>.</p>
+      <div class="row">
+        <button data-act="ytlog">Показать журнал</button>
+        <button data-act="ytsample">Замерить сейчас</button>
+        <button data-act="ytstat">Сводка</button>
       </div>
     </div>
 
@@ -696,8 +736,43 @@ function render(text){
   const keepTop = out.scrollTop;
 
   const frag = document.createDocumentFragment();
+  let tbl = null;                              // текущая таблица, если идёт блок tbl|
   text.split('\n').forEach(line => {
     if (filter && !line.toLowerCase().includes(filter)) return;
+
+    // строки «tbl|a|b|c» собираем в настоящую таблицу: выравнивать колонки
+    // пробелами бессмысленно, ширина символа в моношрифте не равна ширине
+    // кириллицы, да и роутер считает её в байтах
+    if (line.startsWith('tbl|')){
+      const cells = line.slice(4).split('|');
+      if (!tbl){
+        tbl = document.createElement('table');
+        tbl.className = 'outtbl';
+        tbl.appendChild(document.createElement('thead'));
+        tbl.appendChild(document.createElement('tbody'));
+        const wrap = document.createElement('div');
+        wrap.className = 'outtblwrap';
+        wrap.appendChild(tbl);
+        frag.appendChild(wrap);
+        const tr = document.createElement('tr');
+        cells.forEach(c => { const th = document.createElement('th'); th.textContent = c; tr.appendChild(th); });
+        tbl.tHead.appendChild(tr);
+        return;
+      }
+      const tr = document.createElement('tr');
+      cells.forEach((c, i) => {
+        const td = document.createElement('td');
+        td.textContent = c;
+        if (i && /^\d/.test(c)) td.className = 'num';
+        else if (c === 'нет') td.className = 'l-bad';
+        else if (c === '·') td.className = 'l-dim';
+        tr.appendChild(td);
+      });
+      tbl.tBodies[0].appendChild(tr);
+      return;
+    }
+    tbl = null;
+
     const d = document.createElement('div');
     d.textContent = line;
     if (/^\s*[✓●]|running|ГОТОВО|ИТОГ/.test(line)) d.className = 'l-ok';
@@ -773,6 +848,8 @@ const WORKNAME = {
   watchdog:'гоняю сторож', tgcount:'считаю сети', tgupdate:'обновляю сети',
   quic:'переключаю QUIC', geocount:'считаю geoblock', twitch:'проверяю твич',
   svcrun:'проверяю сервисы', svcscore:'меряю матрицу нод', svclog:'читаю лог автоматики',
+  ytlog:'читаю дневник ютуба', ytstat:'считаю сводку', ytsample:'меряю ютуб сейчас',
+  dnsforce:'настраиваю перехват DNS',
   sweepstart:'меряю стратегии скоростью', sweepstop:'прерываю свип'
 };
 let workTimer = null;

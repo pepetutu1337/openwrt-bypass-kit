@@ -49,6 +49,7 @@ if [ "$MODE" = uninstall ]; then
     [ -x /etc/init.d/rctl-bot ] && { /etc/init.d/rctl-bot stop >/dev/null 2>&1; /etc/init.d/rctl-bot disable >/dev/null 2>&1; }
     rm -rf /www/panel /etc/uhttpd-panel.auth /usr/sbin/rctl /usr/sbin/zapret-tune \
            /usr/sbin/zapret-sweep /usr/sbin/svcprobe /etc/svcprobe.conf \
+           /usr/sbin/ytwatch /usr/sbin/dnsforce /etc/nftables.d/22-dns-force.nft \
            /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
     crontab -l 2>/dev/null | grep -v "rctl fix" | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
@@ -67,8 +68,8 @@ $SSH 'cat > /usr/sbin/zapret-tune.new' < "$DIR/router/zapret-tune"
 $SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/zapret-tune && chmod +x /usr/sbin/zapret-tune' \
   || { echo "✗ zapret-tune не прошёл проверку синтаксиса"; exit 1; }
 
-say "заливаю свип стратегий и пробер сервисов"
-for f in zapret-sweep svcprobe; do
+say "заливаю свип стратегий, пробер сервисов, дневник ютуба и перехват DNS"
+for f in zapret-sweep svcprobe ytwatch dnsforce; do
   $SSH "cat > /usr/sbin/$f.new" < "$DIR/router/$f"
   $SSH "sh -n /usr/sbin/$f.new && mv /usr/sbin/$f.new /usr/sbin/$f && chmod +x /usr/sbin/$f" \
     || { echo "✗ $f не прошёл проверку синтаксиса"; exit 1; }
@@ -123,11 +124,14 @@ if [ "$CRON" = 1 ]; then
   # со svcprobe, который выбирает ноду по доказанной работе сервисов.
   say "включаю авто-проверку сервисов"
   $SSH '
-    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe"
+    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch"
       echo "*/5 * * * * SVCPROBE_SKIP_SPEED=1 /usr/sbin/svcprobe auto >/dev/null 2>&1"
-      echo "7 * * * * /usr/sbin/svcprobe score >/dev/null 2>&1" ) | crontab -
+      echo "7 * * * * /usr/sbin/svcprobe score >/dev/null 2>&1"
+      echo "*/10 * * * * /usr/sbin/ytwatch sample light >/dev/null 2>&1"
+      echo "23 */2 * * * /usr/sbin/ytwatch sample >/dev/null 2>&1"
+      echo "17 */1 * * * /usr/sbin/ytwatch heal >/dev/null 2>&1" ) | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
-    echo "✓ крон: */5 svcprobe auto, ежечасно матрица нод"
+    echo "✓ крон: */5 svcprobe auto, матрица нод, дневник ютуба + самолечение"
   '
 fi
 

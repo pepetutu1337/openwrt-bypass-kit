@@ -153,9 +153,11 @@ cmd_result() {
   b=$(grep '^base ' "$OUT" | awk '{print $2}')
   echo "было: ${b:-?} КБ/с"
   echo ""
+  # "tbl|" — панель нарисует настоящую таблицу (см. свод в svcprobe scorelog)
+  echo "tbl|скорость|код|стратегия"
   grep '^cand ' "$OUT" | sort -k2 -nr |
     while read -r _ kb code strat; do
-      printf '%6s КБ/с  %-4s %s\n' "$kb" "$code" "$strat"
+      echo "tbl|$kb КБ/с|$code|$strat"
     done
   w=$(grep '^winner ' "$OUT")
   [ -n "$w" ] && { echo ""; echo "итог: $(echo "$w" | cut -d' ' -f2-)"; }

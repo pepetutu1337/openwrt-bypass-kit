@@ -1,0 +1,67 @@
+#!/bin/sh
+# dnsforce — загнать весь DNS домашних устройств на роутер.
+#
+# Зачем: телефон, который спрашивает адреса у 8.8.8.8 напрямую (а так делают
+# и приложения с прошитым резолвером, и «Приватный DNS» на андроиде), получает
+# ответы мимо нашего DoH и мимо split-DNS. Дальше два симптома: проксируемый
+# сайт не попадает в ipset (адрес-то роутер не видел) и российские сайты
+# резолвятся не тем резолвером. Выглядит как «у всех работает, а у меня нет».
+#
+# Что делаем:
+#   · весь udp/tcp 53 из LAN заворачиваем на роутер (кроме самого роутера)
+#   · DoT (tcp 853) отклоняем — андроид после отказа сам откатывается на 53
+#   · DoH (443) НЕ трогаем: он неотличим от обычного HTTPS
+#
+#   dnsforce on | off | status
+set -u
+
+NFT=/etc/nftables.d/22-dns-force.nft
+OFF=$NFT.off
+
+gen() {
+  lan=$(uci -q get network.lan.ipaddr | cut -d/ -f1)
+  lan=${lan:-192.168.1.1}
+  cat <<EOF
+# генерируется dnsforce — не редактируй руками
+chain dns_force {
+  type nat hook prerouting priority dstnat; policy accept;
+  iifname "br-lan" ip daddr != $lan udp dport 53 counter redirect to :53
+  iifname "br-lan" ip daddr != $lan tcp dport 53 counter redirect to :53
+}
+chain dns_dot_block {
+  type filter hook forward priority filter; policy accept;
+  iifname "br-lan" tcp dport 853 counter reject with tcp reset
+}
+EOF
+}
+
+reload() { /etc/init.d/firewall reload >/dev/null 2>&1; }
+
+case "${1:-status}" in
+  on)
+    gen > "$NFT"; rm -f "$OFF"; reload
+    if nft list chain inet fw4 dns_force >/dev/null 2>&1; then
+      echo "✓ весь DNS из дома идёт через роутер, DoT отклоняется"
+    else
+      echo "✗ правила не поднялись — смотри /etc/init.d/firewall reload"; exit 1
+    fi ;;
+  off)
+    [ -f "$NFT" ] && mv "$NFT" "$OFF"
+    reload
+    echo "✓ перехват DNS выключен (устройства снова вольны спрашивать кого угодно)" ;;
+  status)
+    if nft list chain inet fw4 dns_force >/dev/null 2>&1; then
+      echo "перехват DNS: включён"
+      # счётчики показывают, что перехват не декоративный: кто-то реально
+      # пытался спросить чужой резолвер
+      nft list chain inet fw4 dns_force 2>/dev/null |
+        sed -n 's/.*udp dport 53 counter packets \([0-9]*\).*/  перехвачено запросов (udp): \1/p'
+      nft list chain inet fw4 dns_force 2>/dev/null |
+        sed -n 's/.*tcp dport 53 counter packets \([0-9]*\).*/  перехвачено запросов (tcp): \1/p'
+      nft list chain inet fw4 dns_dot_block 2>/dev/null |
+        sed -n 's/.*counter packets \([0-9]*\).*/  отклонено попыток DoT: \1/p'
+    else
+      echo "перехват DNS: выключен"
+    fi ;;
+  *) echo "dnsforce on|off|status"; exit 1 ;;
+esac

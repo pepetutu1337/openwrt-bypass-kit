@@ -1,0 +1,185 @@
+#!/bin/sh
+# ytwatch — непрерывный дневник ютуба.
+#
+# «Работал, потом завис» разовыми проверками не ловится: когда прибегаешь
+# смотреть, уже опять работает. Поэтому раз в несколько минут снимаем три
+# показателя и складываем в журнал с временем:
+#
+#   cdn   — TLS до хоста googlevideo (тот же SNI, что у видео): жив ли путь
+#   page  — скорость страницы плеера, ~1 МБ, грубый показатель душилова
+#   video — скорость реального куска видео (если Дек подлил свежий адрес,
+#           см. ytwatch url); это единственный честный замер видео-потока
+#
+# Команды:
+#   ytwatch sample        один замер, дописать в журнал
+#   ytwatch log [N]       последние N строк как таблица для панели
+#   ytwatch url ФАЙЛ|-    принять свежий googlevideo-адрес (из ytfeed на Деке)
+#   ytwatch stat          сводка: сколько замеров, сколько плохих, когда
+#   ytwatch heal          если душилово держится — сам пересобирает стратегию
+set -u
+
+LOG=/tmp/ytwatch.log
+URLF=/tmp/ytwatch.url
+PAGE=${YTWATCH_PAGE:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}
+CDN=${YTWATCH_CDN:-https://redirector.googlevideo.com/generate_204}
+# ниже этого считаем, что поток душат (КБ/с)
+SLOW_KB=${YTWATCH_SLOW_KB:-150}
+KEEP=${YTWATCH_KEEP:-400}
+
+kbps() { echo $(( ${1%%.*} / 1024 )); }
+
+# $1 = light: только хендшейк до CDN. Полный замер качает мегабайты, и в
+# кроне раз в 10 минут это под гигабайт в сутки чужого трафика — поэтому
+# часто ходим налегке, а тяжёлый замер делаем раз в пару часов.
+cmd_sample() {
+  light=${1:-}
+  ts=$(date +%s)
+
+  # 1. путь до CDN видео: только хендшейк, трафика почти нет
+  r=$(curl -sS -o /dev/null -m 10 -w '%{http_code} %{time_total}' "$CDN" 2>/dev/null) || r="000 10"
+  set -- $r
+  cdn_code=$1
+  cdn_ms=$(awk -v x="$2" 'BEGIN{printf "%d", x*1000}')
+
+  if [ "$light" = light ]; then
+    echo "$ts $cdn_code $cdn_ms - -1 - -1" >> "$LOG"
+    tail -"$KEEP" "$LOG" > "$LOG.trim" 2>/dev/null && mv "$LOG.trim" "$LOG"
+    cmd_log 1
+    return 0
+  fi
+
+  # 2. страница плеера: идёт тем же путём, что и видео
+  r=$(curl -sS -o /dev/null -m 40 -w '%{http_code} %{speed_download}' "$PAGE" 2>/dev/null) || r="000 0"
+  set -- $r
+  page_code=$1; page_kb=$(kbps "$2")
+
+  # 3. настоящий кусок видео — только если адрес свежий (googlevideo даёт
+  #    ссылке несколько часов, потом 403; протухшую молча не мерим)
+  vid_kb=-1; vid_code="-"
+  if [ -f "$URLF" ]; then
+    u=$(cat "$URLF")
+    exp=$(printf '%s' "$u" | sed -n 's/.*[?&]expire=\([0-9]*\).*/\1/p')
+    if [ -n "$exp" ] && [ "$exp" -gt "$ts" ] 2>/dev/null; then
+      r=$(curl -L -sS -o /dev/null -m 45 -w '%{http_code} %{speed_download}' "$u&range=0-6291455" 2>/dev/null) || r="000 0"
+      set -- $r
+      vid_code=$1; vid_kb=$(kbps "$2")
+    fi
+  fi
+
+  echo "$ts $cdn_code $cdn_ms $page_code $page_kb $vid_code $vid_kb" >> "$LOG"
+  # журнал живёт в tmpfs, не даём ему расти бесконечно
+  tail -"$KEEP" "$LOG" > "$LOG.trim" 2>/dev/null && mv "$LOG.trim" "$LOG"
+
+  cmd_log 1
+}
+
+verdict() { # $1 cdn_code $2 page_kb $3 vid_kb
+  if [ "$1" != 204 ] && [ "$1" != 200 ]; then echo "путь до CDN лёг"; return; fi
+  if [ "$2" = "-1" ] && [ "$3" = "-1" ]; then echo "путь жив (лёгкая проверка)"; return; fi
+  if [ "$3" -ge 0 ] 2>/dev/null; then
+    [ "$3" -lt "$SLOW_KB" ] && { echo "видео душат"; return; }
+    echo "норма"; return
+  fi
+  [ "$2" -lt "$SLOW_KB" ] 2>/dev/null && { echo "страница еле тянет"; return; }
+  echo "норма"
+}
+
+cmd_log() {
+  n=${1:-24}
+  [ -f "$LOG" ] || { echo "замеров ещё не было"; return 0; }
+  echo "tbl|время|CDN|страница|видео|итог"
+  tail -"$n" "$LOG" | while read -r ts cc cms pc pkb vc vkb; do
+    t=$(date -d "@$ts" '+%d.%m %H:%M' 2>/dev/null || date -r "$ts" '+%d.%m %H:%M' 2>/dev/null || echo "$ts")
+    [ "$vkb" -ge 0 ] 2>/dev/null && v="$vkb КБ/с" || v="—"
+    [ "$pkb" -ge 0 ] 2>/dev/null && p="$pkb КБ/с" || p="—"
+    echo "tbl|$t|$cc / $cms мс|$p|$v|$(verdict "$cc" "$pkb" "$vkb")"
+  done
+}
+
+cmd_url() {
+  f=${1:-}
+  [ -n "$f" ] || { echo "ytwatch url ФАЙЛ | -"; exit 1; }
+  if [ "$f" = "-" ]; then cat > "$URLF"; else cp "$f" "$URLF"; fi
+  u=$(cat "$URLF")
+  case "$u" in
+    https://*googlevideo.com/*) : ;;
+    *) rm -f "$URLF"; echo "✗ это не googlevideo-адрес"; exit 1 ;;
+  esac
+  exp=$(printf '%s' "$u" | sed -n 's/.*[?&]expire=\([0-9]*\).*/\1/p')
+  if [ -n "$exp" ]; then
+    left=$(( exp - $(date +%s) ))
+    echo "✓ адрес принят, годен ещё $((left / 3600)) ч $(((left % 3600) / 60)) мин"
+  else
+    echo "✓ адрес принят (срок годности в нём не указан)"
+  fi
+}
+
+cmd_stat() {
+  [ -f "$LOG" ] || { echo "замеров ещё не было"; return 0; }
+  total=$(wc -l < "$LOG")
+  bad=$(awk -v s="$SLOW_KB" '($2!=204 && $2!=200) || ($7>=0 && $7<s) || ($7<0 && $5>=0 && $5<s)' "$LOG" | wc -l)
+  echo ":: замеров: $total, плохих: $bad"
+  [ "$bad" -gt 0 ] && {
+    echo ""
+    echo "последние плохие:"
+    awk -v s="$SLOW_KB" '($2!=204 && $2!=200) || ($7>=0 && $7<s) || ($7<0 && $5>=0 && $5<s) {print $1}' "$LOG" |
+      tail -5 | while read -r ts; do
+        echo "  $(date -d "@$ts" '+%d.%m %H:%M' 2>/dev/null || echo "$ts")"
+      done
+  }
+  echo ""
+  echo "средняя скорость страницы: $(awk '$5>=0{s+=$5; n++} END{if(n) printf "%d", s/n}' "$LOG") КБ/с"
+  v=$(awk '$7>=0{s+=$7; n++} END{if(n) printf "%d", s/n}' "$LOG")
+  [ -n "$v" ] && echo "средняя скорость видео:    $v КБ/с" ||
+    echo "видео ни разу не мерили — подлей адрес с Дека (tools/ytfeed.sh)"
+}
+
+# Самолечение: если журнал подряд показывает душилово, стратегия перестала
+# пробивать (ТСПУ их периодически переучивают). Тогда сами запускаем свип —
+# он гоняет кандидатов на живом обходе и оставляет самого быстрого.
+# Ноду не трогаем: видео идёт мимо неё.
+HEAL_STAMP=/tmp/ytwatch.heal
+HEAL_AFTER=${YTWATCH_HEAL_AFTER:-3}      # плохих замеров подряд
+HEAL_COOLDOWN=${YTWATCH_HEAL_COOLDOWN:-21600}   # не чаще раза в 6 часов
+
+cmd_heal() {
+  [ -f "$LOG" ] || { echo "замеров ещё не было"; return 0; }
+
+  # считаем ХВОСТ подряд идущих плохих замеров, лёгкие проверки пропускаем
+  bad=$(awk -v s="$SLOW_KB" '
+    ($5=="-1" && $7=="-1") { next }                     # лёгкая проверка, не в счёт
+    { line[++n] = (($2!=204 && $2!=200) || ($7>=0 && $7<s) || ($7<0 && $5<s)) ? 1 : 0 }
+    END { c=0; for (i=n; i>=1; i--) { if (line[i]) c++; else break } print c }
+  ' "$LOG")
+
+  if [ "${bad:-0}" -lt "$HEAL_AFTER" ]; then
+    echo ":: подряд плохих замеров: ${bad:-0} из $HEAL_AFTER — лечить нечего"
+    return 0
+  fi
+
+  now=$(date +%s)
+  last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt "$HEAL_COOLDOWN" ]; then
+    echo ":: душилово держится ($bad подряд), но свип уже гоняли $(( (now - last) / 60 )) мин назад — жду"
+    return 0
+  fi
+
+  echo "$now" > "$HEAL_STAMP"
+  echo ":: душилово $bad замеров подряд — запускаю подбор стратегии"
+  # свежие кандидаты есть только после blockcheck; если их нет, сначала он
+  if ! /usr/sbin/zapret-tune result 2>/dev/null | grep -q .; then
+    echo ":: кандидатов нет, сначала blockcheck (обход на это время отключится)"
+    /usr/sbin/zapret-tune start youtube.com quick
+    return 0
+  fi
+  /usr/sbin/zapret-sweep start 8
+}
+
+case "${1:-sample}" in
+  heal)   cmd_heal ;;
+  sample) shift 2>/dev/null; cmd_sample "${1:-}" ;;
+  log)    shift; cmd_log "${1:-24}" ;;
+  url)    shift; cmd_url "${1:--}" ;;
+  stat)   cmd_stat ;;
+  *) echo "ytwatch sample [light]|log [N]|url ФАЙЛ|stat|heal"; exit 1 ;;
+esac
