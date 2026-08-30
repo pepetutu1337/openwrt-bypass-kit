@@ -24,6 +24,7 @@ ACL=/etc/rctl-bot.acl
 
 RCTL=/usr/sbin/rctl
 TUNE=/usr/sbin/zapret-tune
+NETPULT=/usr/sbin/netpult
 export RCTL_LOCAL=1
 BOT_PROXY="${BOT_PROXY:-127.0.0.1:1180}"
 BOT_ALLOW="${BOT_ALLOW:-}"
@@ -297,6 +298,8 @@ HELP_OWNER='## Пульт к роутеру
 **Команды владельца**
 
 `/tune` — подобрать стратегию zapret под домен
+`/subupd` — перечитать подписку и применить
+`/sub ССЫЛКА` — сменить подписку (сообщение со ссылкой сотру)
 `/family` — кто имеет доступ, `/kick ID` — отобрать
 `/logs`, `/info`, `/use ИМЯ`, `/best`, `/auto`'
 
@@ -402,10 +405,35 @@ EOT
   ) &
 }
 
+# Сменить подписку и применить её к конфигу роутера.
+#
+# Два шага не случайно. `vpn sub` только запоминает ссылку и разбирает ноды в
+# своё хозяйство; конфиг роутера правит `vpn sync` — с проверкой самим sing-box,
+# бэкапом и откатом, если после перезапуска наружу не достучаться. Так смена
+# подписки из другого города не может оставить квартиру без интернета: худшее,
+# что выйдет, — останется вчерашний конфиг.
+sub_apply() { # sub_apply CHAT URL
+  _chat=$1; _url=$2
+  ( send_typed "$_chat" sub "$(md_block 'Подписка' 'Забираю ноды по новой ссылке…')"
+    out=$(HOME=/root $NETPULT vpn sub "$_url" 2>&1)
+    code=$?
+    if [ "$code" != 0 ]; then
+      # Ссылку в ответ не возвращаем: она ключ, и в чате ей делать нечего.
+      send_typed "$_chat" sub "$(md_block 'Подписка не принята' "$(printf '%s' "$out" | grep -v 'https://' | tail -5)")"
+      exit 0
+    fi
+    got=$(printf '%s' "$out" | sed -n 's/.*Разобрано нод: \([0-9]*\).*/\1/p' | head -1)
+    send_typed "$_chat" sub "$(md_block 'Подписка' "Нод в новой подписке: ${got:-?}
+Применяю к роутеру…")"
+    out2=$(HOME=/root $NETPULT vpn sync 2>&1)
+    send_typed "$_chat" sub "$(md_block 'Подписка' "$(printf '%s' "$out2" | grep -v 'https://' | tail -6)")"
+  ) &
+}
+
 # ---------- обработчики -------------------------------------------------------
 
-handle() { # handle CHAT РОЛЬ ТЕКСТ
-  chat=$1; role=$2; text=$3
+handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID]
+  chat=$1; role=$2; text=$3; msgid=${4:-}
   case "$text" in
     /start|/help|help|Помощь)
       [ "$role" = owner ] && send_typed "$chat" help "$HELP_OWNER" || send_typed "$chat" help "$HELP_FAMILY" ;;
@@ -426,6 +454,28 @@ handle() { # handle CHAT РОЛЬ ТЕКСТ
       fi ;;
 
     # --- дальше только владелец ---
+    /subupd|/subupdate)
+      if [ "$role" = owner ]; then
+        with_progress "$chat" sub "Обновление подписки" $NETPULT vpn sync
+      else rich "$chat" "Это только для хозяина роутера." >/dev/null; fi ;;
+    /sub\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      url=${text#/sub }
+      # Ссылка подписки — это ключ. Сообщение с ней убираем из чата сразу,
+      # ещё до работы: чтобы оно не осталось в переписке и в облаке телеграма.
+      [ -n "$msgid" ] && tg deleteMessage -o /dev/null \
+          --data-urlencode "chat_id=$chat" --data-urlencode "message_id=$msgid"
+      case "$url" in
+        https://*)
+          # Никакого eval: ссылка уходит отдельным аргументом. Проверяем только
+          # набор знаков, чтобы в аргумент не заехали пробелы и кавычки.
+          if echo "$url" | grep -qE '^https://[A-Za-z0-9._~:/?#@!$&*+,;=%()-]{8,600}$'; then
+            sub_apply "$chat" "$url"
+          else
+            rich "$chat" "В ссылке посторонние знаки — пришли её целиком, одной строкой." >/dev/null
+          fi ;;
+        *) rich "$chat" "Нужна ссылка на подписку, начинается с https://" >/dev/null ;;
+      esac ;;
     /logs)  [ "$role" = owner ] && with_progress "$chat" logs "Лог прокси" $RCTL logs sing-box || rich "$chat" "Это только для хозяина роутера." >/dev/null ;;
     /info)  [ "$role" = owner ] && with_progress "$chat" info "Система" $RCTL info || rich "$chat" "Это только для хозяина роутера." >/dev/null ;;
     /family)
@@ -578,9 +628,14 @@ while :; do
           log "пропущен апдейт $uid: $(printf '%s' "$u" | head -c 200)"
           continue
         fi
+        mid=$(printf '%s' "$u" | sed -n 's/.*"message":{"message_id":\([0-9]*\).*/\1/p')
         if [ -n "$role" ]; then
-          log "команда от $chat ($role): $text"
-          handle "$chat" "$role" "$text"
+          # Ссылка подписки — ключ, в системном журнале ей не место.
+          case "$text" in
+            /sub\ *) log "команда от $chat ($role): /sub <ссылка скрыта>" ;;
+            *)       log "команда от $chat ($role): $text" ;;
+          esac
+          handle "$chat" "$role" "$text" "$mid"
         else
           name=$(printf '%s' "$u" | sed -n 's/.*"from":{"id":[0-9]*,"is_bot":[a-z]*,"first_name":"\([^"]*\)".*/\1/p' | unesc)
           log "чужой чат $chat ($name): $text"
