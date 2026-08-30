@@ -143,14 +143,42 @@ echo ""
 echo "готово — полный чекап завершён"
 '
 
+# Имена нод приходят из подписки и меняются вместе с ней: там пробелы, эмодзи
+# и кириллица. Поэтому список берём построчно, а не через пробел, и всякое имя,
+# уходящее в URL, кодируем — иначе запрос с пробелом внутри пути разваливается.
+NODE_HELPERS='
+nodelist() {
+  curl -s --max-time 4 "$1/proxies/proxy" |
+    sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" |
+    grep -o "\"[^\"]*\"" | sed "s/^\"//; s/\"$//"
+}
+urlenc() {
+  # Побайтно: имя ноды приходит в UTF-8, и посимвольный разбор тут не годится.
+  # od в этой сборке busybox нет, hexdump есть.
+  printf "%s" "$1" | hexdump -v -e "1/1 \"%02x \"" | tr " " "\n" | grep -v "^$" | while read -r h; do
+    c=$(printf "\\x$h")
+    case "$c" in
+      [a-zA-Z0-9.~_-]) printf "%s" "$c" ;;
+      *) printf "%%%s" "$h" ;;
+    esac
+  done
+}
+delay_of() {
+  # $1 — json группового замера, $2 — имя ноды. Имя ищем как есть, но берём
+  # только цифры сразу за ним, иначе жадный разбор цепляет соседнюю ноду.
+  printf "%s" "$1" | tr "," "\n" | grep -F "\"$2\"" | sed -n "s/.*: *\([0-9][0-9]*\).*/\1/p" | head -1
+}
+'
+
 # полный список ВСЕХ серверов селектора с живым пингом (одним запросом /group/proxy/delay)
 R_NODES='
+'"$NODE_HELPERS"'
 API="'"$API"'"
 b="http://$API"
 sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 au=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 active=$sel; [ "$sel" = "auto" ] && active=$au
-all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+all=$(nodelist "$b")
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
 echo ":: пингую все ноды через прокси (до gstatic /generate_204)…"
 d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
@@ -159,19 +187,29 @@ d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/gener
 # Строго последовательно и с коротким таймаутом: sing-box обрабатывает delay-
 # запросы по одному, параллельный запуск вешает всю команду на минуты.
 tmp="/tmp/rctl-nodes.$$"; rm -rf "$tmp"; mkdir -p "$tmp"
-miss=""
-for n in $all; do
+# Имена кладём по номеру, а не в имя файла: в имени ноды бывают пробелы и
+# косые, а файл с косой не создашь.
+printf "%s\n" "$all" > "$tmp/names"
+i=0
+while IFS= read -r n; do
+  i=$((i+1))
   [ "$n" = "auto" ] && continue
-  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
-  if [ -n "$ms" ]; then printf "%s" "$ms" > "$tmp/$n"; else miss="$miss $n"; fi
-done
-if [ -n "$miss" ]; then
-  echo ":: групповой замер промолчал про$miss — перепроверяю поштучно…"
-  for n in $miss; do
-    curl -s --max-time 3 "$b/proxies/$n/delay?url=http://www.gstatic.com/generate_204&timeout=2500" |
-      sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p" > "$tmp/$n"
-  done
-fi
+  ms=$(delay_of "$d" "$n")
+  [ -n "$ms" ] && printf "%s" "$ms" > "$tmp/$i"
+done < "$tmp/names"
+# Групповой замер систематически молчит про часть живых нод — дожимаем их
+# поштучно, строго по одной.
+i=0
+miss=0
+while IFS= read -r n; do
+  i=$((i+1))
+  [ "$n" = "auto" ] && continue
+  [ -s "$tmp/$i" ] && continue
+  miss=$((miss+1))
+  [ "$miss" = 1 ] && echo ":: групповой замер промолчал про часть нод — перепроверяю поштучно…"
+  curl -s --max-time 3 "$b/proxies/$(urlenc "$n")/delay?url=http://www.gstatic.com/generate_204&timeout=2500" |
+    sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p" > "$tmp/$i"
+done < "$tmp/names"
 echo ""
 # Машинная строка для панели + строки таблицы. Колонки пробелами тут не
 # выровнять: busybox считает ширину в байтах и кириллица уводит столбец.
@@ -179,9 +217,11 @@ echo "active: $active"
 echo "selector: $sel"
 echo "tbl|сервер|пинг|состояние"
 up=0; down=0
-for n in $all; do
+i=0
+while IFS= read -r n; do
+  i=$((i+1))
   [ "$n" = "auto" ] && continue
-  ms=$(cat "$tmp/$n" 2>/dev/null)
+  ms=$(cat "$tmp/$i" 2>/dev/null)
   if [ -n "$ms" ]; then
     q="хорошо"; [ "$ms" -gt 250 ] 2>/dev/null && q="ок"; [ "$ms" -gt 450 ] 2>/dev/null && q="медленно"
     [ "$n" = "$active" ] && q="$q, работаем через него"
@@ -189,7 +229,7 @@ for n in $all; do
   else
     echo "tbl|$n|нет|молчит"; down=$((down+1))
   fi
-done
+done < "$tmp/names"
 rm -rf "$tmp"
 echo ""
 echo "живых: $up, молчат: $down. Работаем через: $active (selector=$sel; auto -> $au)"
@@ -198,16 +238,17 @@ echo "живых: $up, молчат: $down. Работаем через: $active
 # только имена серверов и активный — без замеров, чтобы панель могла
 # показать полосу серверов сразу, не гоняя пинги на каждое открытие
 R_NODE_NAMES='
+'"$NODE_HELPERS"'
 API="'"$API"'"
 b="http://$API"
 sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 au=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 active=$sel; [ "$sel" = "auto" ] && active=$au
-all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+all=$(nodelist "$b")
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
 echo "active: $active"
 echo "selector: $sel"
-for n in $all; do [ "$n" = "auto" ] || echo "node: $n"; done
+printf "%s\n" "$all" | while IFS= read -r n; do [ "$n" = "auto" ] || echo "node: $n"; done
 '
 
 # алиас: то же самое (свежий пинг всех)
@@ -215,20 +256,23 @@ R_NODE_TEST="$R_NODES"
 
 # выбрать живую ноду с лучшим пингом и закрепить селектор на ней
 R_NODES_BEST='
+'"$NODE_HELPERS"'
 API="'"$API"'"
 b="http://$API"
 sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
-all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+all=$(nodelist "$b")
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
 echo ":: меряю все ноды…"
 d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
 best=""; bestms=0
-for n in $all; do
+tmpb="/tmp/rctl-best.$$"; printf "%s\n" "$all" > "$tmpb"
+while IFS= read -r n; do
   [ "$n" = "auto" ] && continue
-  ms=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+  ms=$(delay_of "$d" "$n")
   [ -n "$ms" ] || continue
   if [ -z "$best" ] || [ "$ms" -lt "$bestms" ]; then best=$n; bestms=$ms; fi
-done
+done < "$tmpb"
+rm -f "$tmpb"
 [ -n "$best" ] || { echo "✗ ни одна нода не ответила — сеть роутера или подписка"; exit 1; }
 if [ "$sel" = "$best" ]; then
   echo "✓ уже на лучшей: $best ($bestms ms)"
@@ -652,20 +696,22 @@ if [ -z "$sel" ]; then
 else
   active=$sel
   [ "$sel" = "auto" ] && active=$(curl -s --max-time 4 "$b/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
-  ms=$(curl -s --max-time 8 "$b/proxies/$active/delay?url=http://www.gstatic.com/generate_204&timeout=3000" | sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p")
+  ms=$(curl -s --max-time 8 "$b/proxies/$(urlenc "$active")/delay?url=http://www.gstatic.com/generate_204&timeout=3000" | sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p")
   if [ -n "$ms" ] && [ "$ms" -le "$MAX" ]; then
     echo "  ✓ сервер $active отвечает за ${ms} мс — менять не буду"
   else
     [ -n "$ms" ] && echo "  ! сервер $active тормозит (${ms} мс) — ищу лучше" || echo "  ! сервер $active не отвечает — ищу живой"
     d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
-    all=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"all\": *\[\([^]]*\)\].*/\1/p" | tr -d "\"" | tr "," " ")
+    all=$(nodelist "$b")
     best=""; bestms=0
-    for n in $all; do
+    tmpb="/tmp/rctl-heal.$$"; printf "%s\n" "$all" > "$tmpb"
+    while IFS= read -r n; do
       [ "$n" = "auto" ] && continue
-      v=$(printf "%s" "$d" | sed -n "s/.*\"$n\": *\([0-9][0-9]*\).*/\1/p")
+      v=$(delay_of "$d" "$n")
       [ -n "$v" ] || continue
       if [ -z "$best" ] || [ "$v" -lt "$bestms" ]; then best=$n; bestms=$v; fi
-    done
+    done < "$tmpb"
+    rm -f "$tmpb"
     if [ -n "$best" ]; then
       r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$b/proxies/proxy" -d "{\"name\":\"$best\"}")
       [ "$r" = "204" ] && { echo "    ✓ переключил на $best (${bestms} мс)"; changed=1; } || echo "    ✗ переключить не вышло (код $r)"

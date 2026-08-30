@@ -1,0 +1,38 @@
+#!/bin/sh
+# Ночное обновление нод из подписки.
+#
+# Сам разбор и слияние делает netpult: он забирает подписку, подменяет в
+# конфиге sing-box только ноды, проверяет результат самим sing-box и
+# откатывается, если после перезапуска наружу не достучаться. Здесь остаётся
+# журнал и уборка старых бэкапов, чтобы overlay не заплыл.
+
+LOG=/var/log/subsync.log
+KEEP=5
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+
+log ":: обновляю ноды из подписки"
+out=$(HOME=/root /usr/sbin/netpult vpn sync 2>&1)
+code=$?
+echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line; do
+  [ -n "$line" ] && log "   $line"
+done
+
+if [ "$code" = 0 ]; then
+  log ":: готово"
+else
+  log "!! не вышло (код $code) — конфиг остался прежним"
+fi
+
+# Бэкапы копятся по одному на запуск: держим последние несколько.
+ls -1t /etc/sing-box/config.json.bak-1* 2>/dev/null | tail -n +$((KEEP + 1)) | while IFS= read -r old; do
+  rm -f "$old"
+  log "   убрал старый бэкап $(basename "$old")"
+done
+
+# Журнал тоже не должен расти без края.
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 131072 ]; then
+  tail -n 300 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+
+exit "$code"
