@@ -669,7 +669,7 @@ if [ "$crc" != 0 ]; then
   ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && echo "  интернет на роутере есть (1.1.1.1 пингуется)" || echo "  ! даже 1.1.1.1 не пингуется — интернета на роутере нет?"
   exit 1
 fi
-v4n=$(grep -cE "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" 2>/dev/null || echo 0)
+v4n=$({ grep -cE "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" 2>/dev/null || echo 0; } | head -1)
 [ "$v4n" -ge 5 ] 2>/dev/null || { echo "✗ список подозрительно мал (v4=$v4n) — не трогаю"; exit 1; }
 cur=$(cat "$BASE" "$EXTRA" 2>/dev/null)
 new4=$(grep -E "^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$" "$TMP" | while IFS= read -r c; do printf "%s\n" "$cur" | grep -qF "$c" || echo "$c"; done)
@@ -740,7 +740,11 @@ echo "sing-box: $(sing-box version 2>/dev/null | head -1)"
 sel=$(curl -s --max-time 4 "http://$API/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 node=$sel; [ "$sel" = auto ] && node=$(curl -s --max-time 4 "http://$API/proxies/auto" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 echo "нода:     ${node:-?} (selector=$sel)"
-echo "домены:   прокси $(uci -q get dhcp.@ipset[0].domain | wc -w) + geoblock $(grep -c proxy4 /etc/dnsmasq.d/geoblock.conf 2>/dev/null || echo 0)"
+# grep -c печатает 0 и при этом возвращает единицу, когда совпадений нет, —
+# связка через || добавляла к его нулю ещё один, и в строку шло «0 0».
+# head -1 берёт настоящий ответ grep, а запасной ноль остаётся на случай,
+# когда файла нет вовсе и grep не печатает ничего.
+echo "домены:   прокси $(uci -q get dhcp.@ipset[0].domain | wc -w) + geoblock $({ grep -c proxy4 /etc/dnsmasq.d/geoblock.conf 2>/dev/null || echo 0; } | head -1)"
 echo "zapret:   $(pidof nfqws 2>/dev/null | wc -w) nfqws-процессов"
 '
 

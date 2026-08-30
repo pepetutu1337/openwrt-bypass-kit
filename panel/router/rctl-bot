@@ -343,6 +343,12 @@ md_nodes() { # читает вывод `rctl nodes list` со stdin; клави�
         label = flag(alive[i]);
         if (cc[base(alive[i])] > 1) label = label suffix(alive[i]);
         if (active[i]) label = label " ✓";
+        # Телеграм режет callback_data на 64 байтах и отвергает всю клавиатуру
+        # целиком, а не одну кнопку. Имя из подписки — эмодзи плюс кириллица,
+        # это два-три байта на знак, и достаточно одного длинного названия,
+        # чтобы кнопки пропали у всех разом. Такое имя просто не кнопим:
+        # выбрать его по-прежнему можно через /use.
+        if (length("use:" alive[i]) > 64) continue;
         b = "{\"text\":\"" label "\",\"callback_data\":\"use:" alive[i] "\"}";
         row = row (cnt % 4 == 0 ? "" : ",") b;
         cnt++;
@@ -535,6 +541,16 @@ sub_apply() { # sub_apply CHAT URL
 # промолчавших. Раньше бот всё это время молчал, и выглядело как поломка —
 # особенно когда нод стало сорок пять. Теперь одно сообщение обновляется на
 # ходу: сколько проверено, кто проверяется сейчас.
+# Имена нод приезжают из подписки как есть: флаг-эмодзи, кириллица, пробелы,
+# у части — хвостовой пробел. ASCII-регулярка, стоявшая тут раньше, не
+# пропускала ни одного настоящего имени: и /use, и кнопки серверов молча
+# отвечали «кривое имя». Проверяем не набор символов, а членство в списке,
+# который отдаёт clash API, — чего там нет, до rctl не доедет.
+node_known() { # node_known ИМЯ
+  case "$1" in ""|*'"'*|*'\'*) return 1 ;; esac
+  $RCTL nodes names 2>/dev/null | sed -n 's/^node: //p' | grep -qxF "$1"
+}
+
 nodes_live() { # nodes_live CHAT
   _chat=$1
   out=/tmp/rctl-bot.nodes.$_chat
@@ -585,10 +601,10 @@ handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID] [ИМЯ]
     /auto)         with_progress "$chat" node "Автовыбор" $RCTL nodes auto ;;
     /use\ *)
       n=${text#/use }
-      if echo "$n" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+      if node_known "$n"; then
         with_progress "$chat" node "Смена сервера" $RCTL nodes use "$n"
       else
-        rich "$chat" "Кривое имя сервера." >/dev/null
+        rich "$chat" "Нет такого сервера. Список — /nodes." >/dev/null
       fi ;;
 
     /join\ *)
@@ -768,10 +784,10 @@ handle_cb() { # handle_cb CHAT РОЛЬ CBID DATA
   case "$data" in
     use:*)
       n=${data#use:}
-      if echo "$n" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+      if node_known "$n"; then
         answer "$cbid" "переключаю на $n…"
         with_progress "$chat" node "Сервер → $n" $RCTL nodes use "$n"
-      else answer "$cbid" "кривое имя"; fi ;;
+      else answer "$cbid" "нет такого сервера"; fi ;;
     act:best) answer "$cbid" "меряю…"; with_progress "$chat" node "Выбор быстрейшего" $RCTL nodes best ;;
     act:auto) answer "$cbid" "переключаю…"; with_progress "$chat" node "Автовыбор" $RCTL nodes auto ;;
     tunelvl:*)
