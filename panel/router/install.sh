@@ -149,6 +149,12 @@ if [ -n "$BOT_TOKEN" ]; then
         pgrep -f rctl-bot >/dev/null && echo "✓ бот запущен" || echo "✗ бот не поднялся, смотри logread -e rctl-bot"'
 else
   # токен не передали: если он уже прописан — просто перезапускаем с новым кодом
+  # Аварийный канал ставим всегда, но спящим: без /etc/rescue.conf он молча
+  # выходит. Заполнить его — отдельное осознанное действие хозяина.
+  scp -q $SSHOPT "$HERE/rescue" "$TARGET:/usr/sbin/rescue" 2>/dev/null || true
+  $SSH 'chmod +x /usr/sbin/rescue 2>/dev/null
+        [ -f /etc/rescue.conf ] || { printf "# Аварийный канал. Пока пусто — канал спит.\n# RESCUE_URL=https://pastebin.com/raw/XXXXXXXX\n# RESCUE_SECRET=придумай-слово\n" > /etc/rescue.conf; chmod 600 /etc/rescue.conf; }
+        grep -q /usr/sbin/rescue /etc/crontabs/root 2>/dev/null || echo "*/15 * * * * /usr/sbin/rescue" >> /etc/crontabs/root'
   $SSH '[ -f /etc/rctl-bot.conf ] || { printf "BOT_TOKEN=\nBOT_ALLOW=\"\"\nBOT_PROXY=127.0.0.1:1180\n" > /etc/rctl-bot.conf; chmod 600 /etc/rctl-bot.conf; }
         . /etc/rctl-bot.conf
         if [ -n "${BOT_TOKEN:-}" ]; then

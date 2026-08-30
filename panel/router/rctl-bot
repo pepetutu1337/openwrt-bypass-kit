@@ -246,8 +246,8 @@ EOF
 # Таблица серверов + инлайн-кнопки. Кнопки только для живых.
 # На кнопках — только флаги, как просил хозяин. Цифра добавляется, когда в
 # стране больше одной ноды: иначе четыре одинаковых 🇩🇪 подряд и выбор вслепую.
-md_nodes() { # печатает markdown; клавиатуру кладёт в /tmp/rctl-bot.kb
-  $RCTL nodes list 2>&1 | awk '
+md_nodes() { # читает вывод `rctl nodes list` со stdin; клавиатуру кладёт в /tmp/rctl-bot.kb
+  awk '
     BEGIN {
       F["albania"]="🇦🇱";     F["al"]="🇦🇱";
       F["cz"]="🇨🇿";          F["czech"]="🇨🇿";
@@ -288,13 +288,26 @@ md_nodes() { # печатает markdown; клавиатуру кладёт в /
       F["belarus"]="🇧🇾";     F["by"]="🇧🇾";
     }
     function base(n,   b) { b = tolower(n); sub(/[0-9]+$/, "", b); return b }
-    function flag(n,   b) { b = base(n); return (b in F) ? F[b] : "🏳" }
+    # Имена из подписки уже начинаются с флага страны — второй рядом лишний.
+    # Признак простой: первый знак не латиница и не цифра.
+    function flag(n,   b) {
+      if (substr(n, 1, 1) !~ /[A-Za-z0-9]/) return "";
+      b = base(n); return (b in F) ? F[b] : "🏳"
+    }
     function suffix(n,   s) { s = n; if (match(s, /[0-9]+$/)) return substr(s, RSTART); return "" }
-    /^(=>|  )[[:space:]]*[A-Za-z0-9._-]+[[:space:]]/ {
-      act = ($1 == "=>");
-      name = act ? $2 : $1;
-      ms = act ? $3 : $2;
-      if (ms == "-") { dead[++d] = name; next }
+    # rctl печатает ноды строками "tbl|имя|пинг|заметка" — это же читает и
+    # веб-панель. Раньше тут разбирался прежний, двухколоночный вывод, и после
+    # перехода на таблицы бот молча показывал пустой список: строки просто ни
+    # с чем не совпадали.
+    /^tbl\|/ {
+      n = split($0, c, "|");
+      name = c[2];
+      if (name == "сервер" || name == "") next;      # шапка таблицы
+      ms = c[3];
+      note = (n >= 4 ? c[4] : "");
+      act = (index(note, "работаем через") > 0);
+      if (ms !~ /^[0-9]/) { dead[++d] = name; next }
+      sub(/[^0-9].*$/, "", ms);
       alive[++a] = name; pings[a] = ms + 0; active[a] = act;
     }
     END {
@@ -516,6 +529,44 @@ sub_apply() { # sub_apply CHAT URL
   ) &
 }
 
+# Замер серверов идёт под минуту: групповой запрос, потом поштучная дожимка
+# промолчавших. Раньше бот всё это время молчал, и выглядело как поломка —
+# особенно когда нод стало сорок пять. Теперь одно сообщение обновляется на
+# ходу: сколько проверено, кто проверяется сейчас.
+nodes_live() { # nodes_live CHAT
+  _chat=$1
+  out=/tmp/rctl-bot.nodes.$_chat
+  ( $RCTL nodes list > "$out" 2>&1 ) &
+  worker=$!
+  mid=$(send_html "$_chat" "⏳ <b>Меряю серверы</b>
+<i>групповой замер, до 30 с…</i>")
+  i=0
+  while kill -0 "$worker" 2>/dev/null; do
+    sleep 3
+    i=$((i + 3))
+    # Строки дожимки выглядят как "   7/25  Чехия — 241 мс".
+    line=$(grep -E '^ +[0-9]+/[0-9]+ ' "$out" 2>/dev/null | tail -1)
+    if [ -n "$line" ]; then
+      seen=$(printf '%s' "$line" | sed -E 's/^ +([0-9]+)\/([0-9]+).*/\1 из \2/')
+      who=$(printf '%s' "$line" | sed -E 's/^ +[0-9]+\/[0-9]+ +//' | esc_html | head -c 60)
+      body="проверено $seen
+<code>$who</code>"
+    else
+      body="<i>групповой замер, до 30 с…</i>"
+    fi
+    [ -n "$mid" ] && edit_html "$_chat" "$mid" "⏳ <b>Меряю серверы</b>
+идёт ${i}с
+$body"
+    [ "$i" -gt 300 ] && break
+  done
+  wait "$worker" 2>/dev/null
+  [ -n "$mid" ] && tg deleteMessage -o /dev/null \
+      --data-urlencode "chat_id=$_chat" --data-urlencode "message_id=$mid"
+  m=$(md_nodes < "$out")
+  rm -f "$out"
+  send_typed "$_chat" nodes "$m" "$(cat /tmp/rctl-bot.kb 2>/dev/null)"
+}
+
 # ---------- обработчики -------------------------------------------------------
 
 handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID] [ИМЯ]
@@ -527,8 +578,7 @@ handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID] [ИМЯ]
     /fix|Починить|починить)  with_progress "$chat" fix "Починка" $RCTL fix ;;
     /yt|/yttest|Ютуб|ютуб)   with_progress "$chat" yt "Тест ютуба" $RCTL yttest ;;
     /nodes|Серверы|серверы)
-      m=$(md_nodes)
-      send_typed "$chat" nodes "$m" "$(cat /tmp/rctl-bot.kb 2>/dev/null)" ;;
+      nodes_live "$chat" & ;;
     /best|Лучший)  with_progress "$chat" node "Выбор быстрейшего" $RCTL nodes best ;;
     /auto)         with_progress "$chat" node "Автовыбор" $RCTL nodes auto ;;
     /use\ *)
@@ -747,7 +797,7 @@ case "${1:-}" in
   selftest)
     [ -n "${2:-}" ] || { echo "rctl-bot selftest CHAT_ID"; exit 1; }
     send_typed "$2" status "$(md_status)" && echo "статус отправлен"
-    m=$(md_nodes)
+    m=$($RCTL nodes list 2>&1 | md_nodes)
     send_typed "$2" nodes "$m" "$(cat /tmp/rctl-bot.kb 2>/dev/null)" && echo "серверы отправлены"
     exit 0 ;;
 esac
