@@ -18,6 +18,7 @@ set -u
 
 CONF=/etc/rctl-bot.conf
 ACL=/etc/rctl-bot.acl
+CODES=/etc/rctl-bot.codes
 [ -f "$CONF" ] || { echo "нет $CONF"; exit 1; }
 # shellcheck disable=SC1090
 . "$CONF"
@@ -25,6 +26,11 @@ ACL=/etc/rctl-bot.acl
 RCTL=/usr/sbin/rctl
 TUNE=/usr/sbin/zapret-tune
 NETPULT=/usr/sbin/netpult
+
+# Как этот роутер зовут в чате. Бот живёт на роутере, значит один бот — один
+# роутер: «войти в юрисдикцию» и означает подключиться именно к нему. Имя
+# нужно, чтобы, обслуживая несколько роутеров, не перепутать, кому пишешь.
+ROUTER_NAME="${ROUTER_NAME:-$(cat /tmp/sysinfo/model 2>/dev/null || uname -n)}"
 export RCTL_LOCAL=1
 BOT_PROXY="${BOT_PROXY:-127.0.0.1:1180}"
 BOT_ALLOW="${BOT_ALLOW:-}"
@@ -144,7 +150,71 @@ acl_del() {
   grep -v "^$1:" "$ACL" > "$ACL.tmp" 2>/dev/null; mv "$ACL.tmp" "$ACL"; chmod 600 "$ACL"
 }
 
-owners() { echo "$BOT_ALLOW"; }
+owners() {
+  # Постоянные владельцы из конфига плюс те, кто вошёл по коду владельца.
+  echo "$BOT_ALLOW"
+  [ -f "$ACL" ] && awk -F: '$2 == "owner" { print $1 }' "$ACL"
+}
+
+# ---------- коды-приглашения --------------------------------------------------
+#
+# Раньше пускать человека можно было только двумя путями: вписать его id в
+# конфиг руками или дождаться, пока он сам напишет боту, и нажать кнопку. Оба
+# требуют знать чужой числовой id заранее, а он человеку неизвестен.
+#
+# Код проще: хозяин выпускает строку, отдаёт её любым способом, человек шлёт
+# `/join КОД`. Код одноразовый и живёт сутки — утёкший в переписке код должен
+# протухать сам, а не ждать, пока о нём вспомнят.
+
+codes_gc() { # выбросить протухшие и израсходованные
+  [ -f "$CODES" ] || return 0
+  now=$(date +%s)
+  awk -F: -v now="$now" '$3 > now && $4 > 0' "$CODES" > "$CODES.tmp" 2>/dev/null
+  mv "$CODES.tmp" "$CODES"; chmod 600 "$CODES"
+}
+
+code_new() { # code_new РОЛЬ ЧАСОВ ПРИМЕНЕНИЙ -> код
+  touch "$CODES"; chmod 600 "$CODES"
+  codes_gc
+  # Без похожих знаков: ноль и О, единица и I человек путает, диктуя код вслух.
+  c=$(tr -dc 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' < /dev/urandom | head -c 8)
+  printf '%s:%s:%s:%s\n' "$c" "$1" "$(( $(date +%s) + $2 * 3600 ))" "$3" >> "$CODES"
+  echo "$c"
+}
+
+code_take() { # code_take КОД -> РОЛЬ (и списывает применение)
+  [ -f "$CODES" ] || return 1
+  codes_gc
+  line=$(awk -F: -v c="$1" '$1 == c { print; exit }' "$CODES")
+  [ -n "$line" ] || return 1
+  r=$(echo "$line" | cut -d: -f2)
+  left=$(echo "$line" | cut -d: -f4)
+  rest=$(( left - 1 ))
+  if [ "$rest" -le 0 ]; then
+    grep -v "^$1:" "$CODES" > "$CODES.tmp"; mv "$CODES.tmp" "$CODES"
+  else
+    awk -F: -v c="$1" -v n="$rest" 'BEGIN{OFS=":"} $1==c{$4=n} {print}' "$CODES" > "$CODES.tmp"
+    mv "$CODES.tmp" "$CODES"
+  fi
+  chmod 600 "$CODES"
+  echo "$r"
+}
+
+md_codes() {
+  codes_gc
+  echo "## Действующие коды"
+  echo ""
+  if [ ! -s "$CODES" ]; then
+    echo "Ни одного. Выпустить: \`/invite\` — гостю, \`/invite owner\` — второму хозяину."
+    return
+  fi
+  echo "| код | права | осталось часов | применений |"
+  echo "|---|---|---|---|"
+  now=$(date +%s)
+  awk -F: -v now="$now" '{ printf "| `%s` | %s | %d | %s |\n", $1, ($2=="owner"?"хозяин":"гость"), ($3-now)/3600, $4 }' "$CODES"
+  echo ""
+  echo "Отозвать: \`/revoke КОД\`"
+}
 
 # ---------- вывод -------------------------------------------------------------
 
@@ -286,7 +356,7 @@ md_family() {
   echo "Убрать: /kick ID"
 }
 
-HELP_OWNER='## Пульт к роутеру
+HELP_OWNER="## Пульт к роутеру «$ROUTER_NAME»
 
 | кнопка | что делает |
 |---|---|
@@ -295,15 +365,31 @@ HELP_OWNER='## Пульт к роутеру
 | Ютуб | почему не идёт видео |
 | Серверы | таблица с пингом и выбор кнопкой |
 
-**Команды владельца**
+**Кого пускать**
 
-`/tune` — подобрать стратегию zapret под домен
-`/subupd` — перечитать подписку и применить
-`/sub ССЫЛКА` — сменить подписку (сообщение со ссылкой сотру)
-`/family` — кто имеет доступ, `/kick ID` — отобрать
-`/logs`, `/info`, `/use ИМЯ`, `/best`, `/auto`'
+\`/invite\` — код гостю, \`/invite owner\` — код второму хозяину
+\`/codes\` — какие коды ещё живы, \`/revoke КОД\` — отозвать
+\`/family\` — кто уже подключён, \`/kick ID\` — отключить
+Человек присылает боту \`/join КОД\` и попадает сюда. Код одноразовый, живёт сутки.
 
-HELP_FAMILY='## Пульт к роутеру
+**Сайты**
+
+\`/sites\` — что идёт через ноду
+\`/site ДОМЕН\` — пустить сайт через ноду, \`/unsite ДОМЕН\` — вернуть напрямую
+
+**Разбор**
+
+\`/doctor\` — чекап всей цепочки, \`/doctor ДОМЕН\` — по конкретному сайту
+\`/logs\`, \`/info\`, \`/tune\` — подбор стратегии zapret
+
+**Подписка**
+
+\`/subupd\` — перечитать и применить
+\`/sub ССЫЛКА\` — сменить (сообщение со ссылкой сотру)
+
+\`/use ИМЯ\`, \`/best\`, \`/auto\` — серверы. \`/leave\` — отключиться."
+
+HELP_FAMILY="## Пульт к роутеру «$ROUTER_NAME»
 
 | кнопка | что делает |
 |---|---|
@@ -312,7 +398,7 @@ HELP_FAMILY='## Пульт к роутеру
 | Ютуб | проверить, почему не идёт видео |
 | Серверы | список и выбор сервера |
 
-Если после «Починить» лучше не стало — напиши хозяину роутера.'
+Если после «Починить» лучше не стало — напиши хозяину роутера."
 
 # ---------- долгие операции с прогрессом --------------------------------------
 
@@ -432,8 +518,8 @@ sub_apply() { # sub_apply CHAT URL
 
 # ---------- обработчики -------------------------------------------------------
 
-handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID]
-  chat=$1; role=$2; text=$3; msgid=${4:-}
+handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID] [ИМЯ]
+  chat=$1; role=$2; text=$3; msgid=${4:-}; sender_name=${5:-}
   case "$text" in
     /start|/help|help|Помощь)
       [ "$role" = owner ] && send_typed "$chat" help "$HELP_OWNER" || send_typed "$chat" help "$HELP_FAMILY" ;;
@@ -453,7 +539,93 @@ handle() { # handle CHAT РОЛЬ ТЕКСТ [MESSAGE_ID]
         rich "$chat" "Кривое имя сервера." >/dev/null
       fi ;;
 
+    /join\ *)
+      code=$(echo "${text#/join }" | tr -d ' ' | tr 'a-z' 'A-Z')
+      if [ -n "$role" ]; then
+        rich "$chat" "Ты и так подключён к «$ROUTER_NAME» как $( [ "$role" = owner ] && echo хозяин || echo гость)." >/dev/null
+        return
+      fi
+      got=$(code_take "$code") || got=""
+      if [ -z "$got" ]; then
+        # Про причину не уточняем: перебирающему коды незачем знать, был ли
+        # такой код вообще и не протух ли он.
+        rich "$chat" "Код не подошёл." >/dev/null
+        log "неудачный /join от $chat"
+        return
+      fi
+      nm=$(printf '%s' "$sender_name" | head -c 40)
+      acl_add "$chat" "$got" "${nm:-без имени}"
+      rm -f "/tmp/rctl-bot.pending.$chat"
+      log "вход по коду: $chat как $got"
+      send_typed "$chat" help "$( [ "$got" = owner ] && echo "$HELP_OWNER" || echo "$HELP_FAMILY" )"
+      rich "$chat" "Подключил к роутеру **$ROUTER_NAME** как $( [ "$got" = owner ] && echo "хозяина" || echo "гостя"). Выйти — \`/leave\`." >/dev/null
+      for o in $(owners); do
+        [ "$o" = "$chat" ] && continue
+        rich "$o" "К «$ROUTER_NAME» подключился \`$chat\` (${nm:-без имени}) как $( [ "$got" = owner ] && echo хозяин || echo гость) — по коду." >/dev/null
+      done ;;
+    /leave)
+      if [ -z "$role" ]; then rich "$chat" "Ты и не подключён." >/dev/null; return; fi
+      # Из конфига убрать нельзя: BOT_ALLOW правится только на самом роутере.
+      # Это и хорошо — последний хозяин не может случайно закрыть себе дверь.
+      case " $BOT_ALLOW " in
+        *" $chat "*) rich "$chat" "Ты вписан хозяином в самом роутере — отсюда не отключить. Убери себя из \`BOT_ALLOW\` на роутере." >/dev/null; return ;;
+      esac
+      acl_del "$chat"
+      log "вышел: $chat"
+      rich "$chat" "Отключил от «$ROUTER_NAME». Вернуться — по новому коду: \`/join КОД\`." >/dev/null ;;
+
     # --- дальше только владелец ---
+    /invite|/invite\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      kind=${text#/invite}; kind=${kind# }
+      case "$kind" in
+        owner) c=$(code_new owner 24 1)
+               rich "$chat" "## Код второго хозяина
+
+\`$c\`
+
+Один вход, годен сутки. Тот, кто им войдёт, получит **все** права на «$ROUTER_NAME», включая подписку и настройки. Отозвать: \`/revoke $c\`" >/dev/null ;;
+        *)     c=$(code_new family 24 1)
+               rich "$chat" "## Код для гостя
+
+\`$c\`
+
+Один вход, годен сутки. Передай человеку — пусть пришлёт боту \`/join $c\`.
+
+Гостю достанутся статус, починка, тест ютуба и выбор сервера. Настройки, подписка и стратегии останутся только тебе. Отозвать: \`/revoke $c\`" >/dev/null ;;
+      esac ;;
+    /codes)
+      [ "$role" = owner ] && send_typed "$chat" codes "$(md_codes)" || rich "$chat" "Это только для хозяина роутера." >/dev/null ;;
+    /revoke\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      c=$(echo "${text#/revoke }" | tr -d ' ' | tr 'a-z' 'A-Z')
+      if [ -f "$CODES" ] && grep -q "^$c:" "$CODES"; then
+        grep -v "^$c:" "$CODES" > "$CODES.tmp"; mv "$CODES.tmp" "$CODES"; chmod 600 "$CODES"
+        rich "$chat" "Код \`$c\` отозван." >/dev/null
+      else rich "$chat" "Такого кода нет." >/dev/null; fi ;;
+    /doctor|/doctor\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      d=${text#/doctor}; d=${d# }
+      if [ -z "$d" ]; then
+        with_progress "$chat" doctor "Чекап" $RCTL doctor
+      elif echo "$d" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
+        with_progress "$chat" doctor "Чекап $d" $RCTL doctor "$d"
+      else rich "$chat" "Это не похоже на домен." >/dev/null; fi ;;
+    /sites|/domains)
+      [ "$role" = owner ] && with_progress "$chat" dom "Сайты через ноду" $RCTL domains list || rich "$chat" "Это только для хозяина роутера." >/dev/null ;;
+    /site\ *|/domain\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      d=$(echo "${text#/site }" | sed 's|^/domain ||' | tr 'A-Z' 'a-z' \
+          | sed 's|^[a-z][a-z0-9+.-]*://||; s|^[^/@]*@||; s|[/?#].*$||; s|:[0-9]*$||; s|^www\.||; s|\.$||')
+      if echo "$d" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
+        with_progress "$chat" dom "Добавляю $d" $RCTL domains add "$d"
+      else rich "$chat" "Это не похоже на домен." >/dev/null; fi ;;
+    /unsite\ *)
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      d=$(echo "${text#/unsite }" | tr 'A-Z' 'a-z' | tr -d ' ')
+      if echo "$d" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
+        with_progress "$chat" dom "Убираю $d" $RCTL domains rm "$d"
+      else rich "$chat" "Это не похоже на домен." >/dev/null; fi ;;
     /subupd|/subupdate)
       if [ "$role" = owner ]; then
         with_progress "$chat" sub "Обновление подписки" $NETPULT vpn sync
@@ -635,15 +807,23 @@ while :; do
           continue
         fi
         mid=$(printf '%s' "$u" | sed -n 's/.*"message":{"message_id":\([0-9]*\).*/\1/p')
+        name=$(printf '%s' "$u" | sed -n 's/.*"first_name":"\([^"]*\)".*/\1/p' | unesc)
+        # `/join` обязан доходить и от того, у кого прав ещё нет: это и есть
+        # дверь. Остальное от неизвестных по-прежнему уходит хозяину запросом.
+        case "$text" in
+          /join\ *|/join|/leave)
+            log "дверь от $chat: $(echo "$text" | cut -d" " -f1)"
+            handle "$chat" "$role" "$text" "$mid" "$name" "$name"
+            continue ;;
+        esac
         if [ -n "$role" ]; then
           # Ссылка подписки — ключ, в системном журнале ей не место.
           case "$text" in
             /sub\ *) log "команда от $chat ($role): /sub <ссылка скрыта>" ;;
             *)       log "команда от $chat ($role): $text" ;;
           esac
-          handle "$chat" "$role" "$text" "$mid"
+          handle "$chat" "$role" "$text" "$mid" "$name"
         else
-          name=$(printf '%s' "$u" | sed -n 's/.*"from":{"id":[0-9]*,"is_bot":[a-z]*,"first_name":"\([^"]*\)".*/\1/p' | unesc)
           log "чужой чат $chat ($name): $text"
           pend=$(ls /tmp/rctl-bot.pending.* 2>/dev/null | wc -l)
           if [ -f "/tmp/rctl-bot.pending.$chat" ]; then
