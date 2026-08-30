@@ -25,7 +25,6 @@ field() {
 a=$(field a)
 v=$(field v)
 
-NAME_RE='^[A-Za-z0-9._-]{1,64}$'
 DOM_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 
 die() { echo "✗ $1"; exit 0; }
@@ -122,7 +121,16 @@ case "$a" in
   best)      exec "$RCTL" nodes best ;;
   auto)      exec "$RCTL" nodes auto ;;
   use)
-    echo "$v" | grep -qE "$NAME_RE" || die "кривое имя ноды"
+    # Имена нод приходят из подписки: флаг-эмодзи, кириллица, пробелы, а у
+    # некоторых ещё и хвостовой пробел — под прежнюю ASCII-регулярку не
+    # подходило ни одно, и панель отвечала «кривое имя ноды» на любую живую
+    # ноду. Проверяем не набор символов, а членство в реальном списке:
+    # чего нет у clash API, то до rctl не доедет.
+    [ -n "$v" ] || die "не задано имя ноды"
+    case "$v" in *'"'*|*'\'*) die "кривое имя ноды" ;; esac
+    names=$("$RCTL" nodes names | sed -n 's/^node: //p')
+    [ -n "$names" ] || die "clash API не ответил — sing-box запущен?"
+    printf '%s\n' "$names" | grep -qxF "$v" || die "нет такой ноды: $v"
     exec "$RCTL" nodes use "$v" ;;
   restart)
     case "$v" in
