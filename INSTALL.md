@@ -41,18 +41,32 @@ ssh root@192.168.1.1 echo ok
 
 ## 2. Скачать кит
 
+Одной командой — положит кит в `~/openwrt-bypass-kit`, заготовит `nodes.list`
+и напомнит, что заполнить:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pepetutu1337/openwrt-bypass-kit/main/get.sh | sh
+```
+
+Если GitHub режут (частый случай — ради этого кит и нужен), то же через зеркало:
+
+```sh
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/pepetutu1337/openwrt-bypass-kit/main/get.sh | sh
+```
+
+Руками, если так привычнее:
+
 ```sh
 git clone https://github.com/pepetutu1337/openwrt-bypass-kit.git
 cd openwrt-bypass-kit
+cp config/nodes.list.example config/nodes.list
 ```
-
-(или просто скачай ZIP с GitHub и распакуй, если без git)
 
 ## 3. Заполнить конфиг под себя
 
 ```sh
+cd ~/openwrt-bypass-kit
 nano config/kit.conf         # ROUTER_IP, если не 192.168.1.1
-cp config/nodes.list.example config/nodes.list
 nano config/nodes.list       # вставь свои vless://-ссылки, по одной на строку
 ```
 

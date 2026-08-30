@@ -101,9 +101,24 @@ netctl nodes add-url 'vless://…' # или готовой ссылкой
 
 ## Быстрый старт (терминал)
 
+Скачать кит одной командой (Linux / macOS; ничего на роутер пока не ставит):
+
 ```sh
+curl -fsSL https://raw.githubusercontent.com/pepetutu1337/openwrt-bypass-kit/main/get.sh | sh
+```
+
+Не скачалось — GitHub из России отдаёт через раз, то же через зеркало:
+
+```sh
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/pepetutu1337/openwrt-bypass-kit/main/get.sh | sh
+```
+
+Windows и вручную — `git clone`, дальше всё то же.
+
+```sh
+cd ~/openwrt-bypass-kit
+
 # 1. правим под себя
-cp config/nodes.list.example config/nodes.list   # nodes.list в .gitignore (личные ноды)
 nano config/kit.conf        # ROUTER_IP и т.п.
 nano config/nodes.list      # вставляем свои vless:// ссылки
 nano config/domains.list    # при желании меняем список (дефолт уже большой)

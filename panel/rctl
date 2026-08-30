@@ -181,6 +181,7 @@ active=$sel; [ "$sel" = "auto" ] && active=$au
 all=$(nodelist "$b")
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
 echo ":: пингую все ноды через прокси (до gstatic /generate_204)…"
+echo "   групповой замер идёт одним запросом, до 30 с — ждём"
 d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
 # Групповой замер систематически молчит про часть живых нод (проверено: albania
 # в группе "-", а одиночным запросом 388 мс). Дожимаем промолчавшие поштучно.
@@ -199,6 +200,14 @@ while IFS= read -r n; do
 done < "$tmp/names"
 # Групповой замер систематически молчит про часть живых нод — дожимаем их
 # поштучно, строго по одной.
+# Сколько нод придётся дожимать — считаем заранее, чтобы в ходе прогона
+# было видно «сколько из скольких», а не безымянный поток строк.
+todo=0; i=0
+while IFS= read -r n; do
+  i=$((i+1))
+  [ "$n" = "auto" ] && continue
+  [ -s "$tmp/$i" ] || todo=$((todo+1))
+done < "$tmp/names"
 i=0
 miss=0
 while IFS= read -r n; do
@@ -206,9 +215,14 @@ while IFS= read -r n; do
   [ "$n" = "auto" ] && continue
   [ -s "$tmp/$i" ] && continue
   miss=$((miss+1))
-  [ "$miss" = 1 ] && echo ":: групповой замер промолчал про часть нод — перепроверяю поштучно…"
+  [ "$miss" = 1 ] && echo ":: групповой замер промолчал про $todo нод — перепроверяю поштучно (до 3 с на ноду)…"
   curl -s --max-time 3 "$b/proxies/$(urlenc "$n")/delay?url=http://www.gstatic.com/generate_204&timeout=2500" |
     sed -n "s/.*\"delay\": *\([0-9][0-9]*\).*/\1/p" > "$tmp/$i"
+  if [ -s "$tmp/$i" ]; then
+    echo "   $miss/$todo  $n — $(cat "$tmp/$i") мс"
+  else
+    echo "   $miss/$todo  $n — молчит"
+  fi
 done < "$tmp/names"
 echo ""
 # Машинная строка для панели + строки таблицы. Колонки пробелами тут не
@@ -262,7 +276,7 @@ b="http://$API"
 sel=$(curl -s --max-time 4 "$b/proxies/proxy" | sed -n "s/.*\"now\": *\"\([^\"]*\)\".*/\1/p")
 all=$(nodelist "$b")
 [ -n "$all" ] || { echo "! clash API $API не ответил (sing-box запущен?)"; exit 1; }
-echo ":: меряю все ноды…"
+echo ":: меряю все ноды… (групповой замер, до 30 с)"
 d=$(curl -s --max-time 30 "$b/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
 best=""; bestms=0
 tmpb="/tmp/rctl-best.$$"; printf "%s\n" "$all" > "$tmpb"
