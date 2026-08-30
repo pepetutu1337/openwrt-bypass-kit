@@ -389,6 +389,7 @@ HELP_OWNER="## Пульт к роутеру «$ROUTER_NAME»
 
 \`/sites\` — что идёт через ноду
 \`/site ДОМЕН\` — пустить сайт через ноду, \`/unsite ДОМЕН\` — вернуть напрямую
+\`/scout [СЕК]\` — разведка: какие ещё домены нужны сайту (открой его, пока идёт)
 
 **Разбор**
 
@@ -690,6 +691,15 @@ $(tail -6 /var/log/rescue.log 2>/dev/null | sed 's/^/    /' || echo '    жур�
       if echo "$d" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
         with_progress "$chat" dom "Добавляю $d" $RCTL domains add "$d"
       else rich "$chat" "Это не похоже на домен." >/dev/null; fi ;;
+    /scout|/scout\ *|/разведка)
+      # Разведка спутников. Из телеграма слушаем всю сеть: устройство, с
+      # которого пишут в бот, роутеру не видно — сообщение приходит через
+      # телеграм, а не напрямую.
+      if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
+      sec=$(echo "${text#/scout}" | tr -dc '0-9')
+      [ -n "$sec" ] || sec=45
+      with_progress "$chat" dom "Разведка соседних доменов ($sec с)" \
+        $RCTL domains scout "$sec" - ;;
     /unsite\ *)
       if [ "$role" != owner ]; then rich "$chat" "Это только для хозяина роутера." >/dev/null; return; fi
       d=$(echo "${text#/unsite }" | tr 'A-Z' 'a-z' | tr -d ' ')

@@ -34,6 +34,7 @@ NFT=/etc/nftables.d/20-proxy.nft
 DNSD=/etc/dnsmasq.d/netkit.conf
 SPLITD=/etc/dnsmasq.d/split-ru.conf
 GEOBLOCKD=/etc/dnsmasq.d/geoblock.conf
+MARKD=/etc/dnsmasq.d/netkit-mark.conf
 SOCKS_DIAG=10800; CLASH=127.0.0.1:9090; CLASH_PORT=9090
 
 say()  { printf '\033[1;36m::\033[0m %s\n' "$*"; }
@@ -230,6 +231,27 @@ gen_splitdns() {
   ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → $RU_DNS"
 }
 
+# ---------- метка «это роутер кита» ----------
+# Раскладка доменов по маршрутам держится на том, что dnsmasq видит DNS-запросы
+# клиентов: имя спросили — адрес попал в набор — трафик свернул в туннель.
+# Машина со своим шифрованным резолвером обходит dnsmasq стороной, роутер нужных
+# адресов не видит, и её сайты уходят напрямую мимо ноды. Внешне это выглядит
+# как «сайт не грузится без VPN», а не как поломка DNS, и ищется долго.
+#
+# По этой метке netpult на клиенте узнаёт такой роутер и отдаёт DNS ему, вместо
+# того чтобы поднимать своё поверх. Зона .invalid (RFC 2606) не существует по
+# определению, поэтому ответ может прийти только отсюда. Адрес — из
+# документационной сети 192.0.2.0/24 (RFC 5737): защита от DNS-rebind режет
+# ответы в 127.0.0.0/8 и в частных сетях, и метка на таком адресе не доезжает.
+gen_mark() {
+  mkdir -p /etc/dnsmasq.d
+  {
+    echo "# генерируется netkit — метка кита для netpult на клиентах"
+    echo "address=/kit.netpult.invalid/192.0.2.7"
+  } > "$MARKD"
+  ok "метка кита: kit.netpult.invalid → 192.0.2.7"
+}
+
 # ---------- dnsmasq: проксируемые домены → наборы proxy4/6 ----------
 gen_dns() {
   mkdir -p /etc/dnsmasq.d
@@ -240,6 +262,7 @@ gen_dns() {
       echo "nftset=/$d/6#inet#fw4#proxy6"
     done
   } > "$DNSD"
+  gen_mark
   gen_dns_upstream
   gen_splitdns
   # заставляем dnsmasq читать нашу папку

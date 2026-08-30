@@ -315,6 +315,123 @@ r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "http://$API/proxies/proxy" -d
 [ "$r" = "204" ] && echo "✓ selector -> auto (авто-выбор быстрейшей)" || echo "✗ код $r"
 '
 
+# Разведка спутников: какие ещё хосты нужны сайту, чтобы он заработал.
+#
+# Одного имени сайту почти никогда не хватает: страница лежит на одном домене,
+# картинки на втором, а поток — на третьем, и третий часто не угадывается ни по
+# имени, ни по вёрстке. Ловили на саундклауде: soundcloud.com и sndcdn.com были
+# в списке, страница открывалась, а треки молчали — аудио идёт с
+# playback.media-streaming.soundcloud.cloud, и этот адрес появляется только в
+# ответе их API, ни в какой разметке его нет.
+#
+# Поэтому спрашиваем не разметку, а сам роутер: на время разведки включаем
+# журнал DNS-запросов, человек открывает сайт и щёлкает по нему, а мы смотрим,
+# какие имена dnsmasq спросили в это окно. Список получается настоящий.
+R_DOM_SCOUT='
+secs=${1:-45}
+case "$secs" in *[!0-9]*|"") secs=45 ;; esac
+[ "$secs" -gt 180 ] && secs=180
+[ "$secs" -lt 10 ] && secs=10
+
+# Роутер видит запросы всех устройств сразу, и в улов попадают телефон в
+# кармане и телевизор в другой комнате. Поэтому по умолчанию слушаем только то
+# устройство, с которого пришли: "-" — слушать всех.
+who=${2:-}
+[ -z "$who" ] && who=$(echo "${SSH_CLIENT:-}" | awk "{print \$1}")
+[ "$who" = "-" ] && who=""
+
+was=$(uci -q get dhcp.@dnsmasq[0].logqueries)
+uci set dhcp.@dnsmasq[0].logqueries=1
+uci commit dhcp
+/etc/init.d/dnsmasq restart >/dev/null 2>&1
+sleep 2
+
+# отметка, от которой считаем: всё, что было в кольцевом журнале раньше, не наше
+mark="netkit-scout-$(date +%s)"
+logger -t netkit-scout "$mark"
+
+echo ":: журнал DNS включён на $secs с"
+[ -n "$who" ] && echo ":: слушаю только $who (все устройства: добавь \"-\" вторым доводом)" \
+              || echo ":: слушаю все устройства сети"
+echo ":: ОТКРОЙ САЙТ и погоняй его — включи трек, промотай, открой пару страниц"
+echo ""
+i=0
+while [ "$i" -lt "$secs" ]; do
+  sleep 5
+  i=$((i + 5))
+  # grep -c возвращает единицу, когда совпадений нет, поэтому связку через
+  # || тут ставить нельзя: на пустом улове печатались обе ветки сразу.
+  n=$(logread 2>/dev/null | sed -n "/$mark/,\$p" | grep "query\[A" |
+      grep -c "${who:+from $who\$}${who:-.}")
+  [ -n "$n" ] || n=0
+  echo "   $i из $secs с — имён спрошено: $n"
+done
+
+logread 2>/dev/null | sed -n "/$mark/,\$p" | grep "query\[A" |
+  grep "${who:+from $who\$}${who:-.}" |
+  sed -n "s/.*query\[A\{1,4\}\] \([^ ]*\) from.*/\1/p" |
+  tr "A-Z" "a-z" | sort -u > /tmp/scout-hosts.txt
+
+# восстанавливаем журнал как было — он шумный и место в кольце не бесконечное
+if [ -n "$was" ]; then uci set dhcp.@dnsmasq[0].logqueries="$was"
+else uci -q delete dhcp.@dnsmasq[0].logqueries; fi
+uci commit dhcp
+/etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+cur=" $(uci -q get dhcp.@ipset[0].domain) "
+
+# Схлопываем хосты до домена второго уровня: в список идёт он, dnsmasq сам
+# накрывает все поддомены. Для доменов вида co.uk оставляем три уровня.
+regd() {
+  case "$1" in
+    *.co.uk|*.com.br|*.co.jp|*.com.au|*.co.nz|*.com.tr)
+      echo "$1" | awk -F. "{print \$(NF-2)\".\"\$(NF-1)\".\"\$NF}" ;;
+    *) echo "$1" | awk -F. "{if (NF>=2) print \$(NF-1)\".\"\$NF; else print \$0}" ;;
+  esac
+}
+
+echo ""
+echo ":: спрошено имён: $(wc -l < /tmp/scout-hosts.txt)"
+echo ""
+
+: > /tmp/scout-new.txt
+while IFS= read -r h; do
+  [ -n "$h" ] || continue
+  case "$h" in
+    *.lan|*.local|*.arpa|*.invalid|localhost) continue ;;
+  esac
+  d=$(regd "$h")
+  case " $(cat /tmp/scout-new.txt | tr "\n" " ") " in *" $d "*) continue ;; esac
+  case "$cur" in
+    *" $d "*) continue ;;                      # уже в списке — не показываем
+  esac
+  if [ -f /etc/dnsmasq.d/geoblock.conf ] && grep -q "^nftset=/$d/" /etc/dnsmasq.d/geoblock.conf; then
+    continue                                    # накрыт автосписком геоблока
+  fi
+  echo "$d" >> /tmp/scout-new.txt
+done < /tmp/scout-hosts.txt
+
+if [ ! -s /tmp/scout-new.txt ]; then
+  echo "Все спрошенные домены уже покрыты — добавлять нечего."
+  exit 0
+fi
+
+echo "tbl|домен|имён|напрямую|через ноду"
+while IFS= read -r d; do
+  n=$(grep -c "\\.\\{0,\\}$d\$" /tmp/scout-hosts.txt)
+  h=$(grep "$d\$" /tmp/scout-hosts.txt | head -1)
+  [ -n "$h" ] || h=$d
+  c1=$(curl -s -o /dev/null -w "%{http_code}" -m 8 "https://$h/" 2>/dev/null)
+  c2=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --socks5-hostname 127.0.0.1:1180 "https://$h/" 2>/dev/null)
+  echo "tbl|$d|$n|${c1:-000}|${c2:-000}"
+done < /tmp/scout-new.txt
+
+echo ""
+echo "Добавить все разом:  rctl domains add $(tr "\n" " " < /tmp/scout-new.txt)"
+echo "Столбцы «напрямую» и «через ноду» — что ответил хост тем и другим путём."
+echo "000 напрямую и код через ноду — как раз тот случай, когда домен нужен в списке."
+'
+
 R_DOMAINS_LIST='
 n=$(uci -q get dhcp.@ipset[0].domain | tr " " "\n" | sort | grep .)
 echo ":: проксируемых доменов (uci-ipset): $(printf "%s\n" "$n" | grep -c .)"
@@ -781,7 +898,8 @@ case "$cmd" in
       add)  shift; [ $# -ge 1 ] || { echo "rctl domains add ДОМЕН…"; exit 1; }; remote "$R_DOMAINS_ADD" "$@" ;;
       rm)   shift; [ $# -ge 1 ] || { echo "rctl domains rm ДОМЕН"; exit 1; }; remote "$R_DOMAINS_RM" "$@" ;;
       check) shift; [ $# -ge 1 ] || { echo "rctl domains check ДОМЕН"; exit 1; }; remote "$R_DOM_CHECK" "$1" ;;
-      *) echo "domains list|add ДОМЕН…|rm ДОМЕН|check ДОМЕН"; exit 1 ;;
+      scout) shift; remote "$R_DOM_SCOUT" "${1:-45}" "${2:-}" ;;
+      *) echo "domains list|add ДОМЕН…|rm ДОМЕН|check ДОМЕН|scout [СЕК]"; exit 1 ;;
     esac ;;
   geoblock)
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
@@ -893,6 +1011,7 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl twitch [КАНАЛ]        тест твича: куда идёт usher и даёт ли он 1080p
   rctl nodes list|test|best|use ИМЯ|auto живые ноды через clash API :9090 (best = закрепить лучшую по пингу)
   rctl domains list|add ДОМЕН…|rm ДОМЕН  проксируемые домены (uci-ipset)
+  rctl domains scout [СЕК] [IP|-]   разведка: какие ещё домены нужны сайту (открой сайт, пока идёт)
   rctl domains check ДОМЕН    разбор: заведён ли, куда резолвится, идёт ли в прокси
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
   rctl telegram-cidr update|count        офиц. CIDR Telegram (core.telegram.org), доп.файл, база не трогается
