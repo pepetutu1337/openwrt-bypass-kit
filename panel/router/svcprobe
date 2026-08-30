@@ -300,6 +300,24 @@ best_for() {
 }
 
 # ---- автоматика -------------------------------------------------------------
+# Сказать хозяину в телеграм. Не чаще раза в час, иначе при затяжной поломке
+# это превращается в поток одинаковых сообщений.
+TELL_STAMP=/tmp/svcprobe.told
+tell() {
+  [ -f /etc/rctl-bot.conf ] || return 0
+  now=$(date +%s); last=$(cat "$TELL_STAMP" 2>/dev/null || echo 0)
+  [ $((now - last)) -gt 3600 ] || return 0
+  # shellcheck disable=SC1091
+  . /etc/rctl-bot.conf 2>/dev/null || return 0
+  [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
+  echo "$now" > "$TELL_STAMP"
+  for chat in $BOT_ALLOW; do
+    curl -s -o /dev/null -m 15 --socks5-hostname "${BOT_PROXY:-127.0.0.1:$SOCKS_PORT}" \
+      "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+      --data-urlencode "chat_id=$chat" --data-urlencode "text=$1" 2>/dev/null || true
+  done
+}
+
 cmd_auto() {
   # Сначала поднимаем упавшие службы: проверять сервисы при мёртвом sing-box
   # бессмысленно, а переключать ноду — тем более.
@@ -320,15 +338,21 @@ cmd_auto() {
   # сервис отдельно, телеграм тянет селектор на одну ноду, инстаграм на другую,
   # и они гоняют переключатель по кругу.
   need="/tmp/svcprobe.need"; : > "$need"
+  : > /tmp/svcprobe.dpi
 
   grep -E '^svc ' "$OUT" | while read -r _ name state layer rest; do
     [ "$state" = ok ] && continue
     s=$(streak "$name")
     case "$layer" in
       dpi)
-        # ноду дёргать бессмысленно: трафик и так идёт мимо неё
-        [ "$s" -ge "$SWITCH_AFTER" ] &&
-          logline "$name: слой dpi ($s подряд) — нужна новая стратегия zapret, ноду не трогаю"
+        # Ноду дёргать бессмысленно: трафик и так идёт мимо неё, лечится
+        # стратегия. Раньше тут стояла только запись в лог — и она честно
+        # легла туда за сутки до того, как хозяин заметил, что ютуб не
+        # работает. Диагноз без действия бесполезен, поэтому зовём лечение.
+        if [ "$s" -ge "$SWITCH_AFTER" ]; then
+          logline "$name: слой dpi ($s подряд) — зову подбор стратегии"
+          echo "$name" >> /tmp/svcprobe.dpi
+        fi
         ;;
       route)
         logline "$name: слой route — $rest"
@@ -338,6 +362,13 @@ cmd_auto() {
         ;;
     esac
   done
+
+  # Лечение стратегии — до разбора нод: оно ничего не ломает (свип идёт на
+  # включённом обходе), а ждать своей очереди ему незачем. ytwatch сам решит,
+  # достаточно ли поводов и не рано ли после прошлого раза.
+  if [ -s /tmp/svcprobe.dpi ]; then
+    /usr/sbin/ytwatch heal 2>&1 | while IFS= read -r l; do logline "  $l"; done
+  fi
 
   [ -s "$need" ] || { [ -f "$LOG" ] && tail -5 "$LOG" || echo "автоматике нечего чинить"; return 0; }
 
@@ -353,12 +384,29 @@ cmd_auto() {
   if [ -n "$b" ] && [ "$b" != "$cur" ]; then
     r=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://$API/proxies/proxy" -d "{\"name\":\"$b\"}")
     if [ "$r" = 204 ]; then
-      logline "лежат: ${broken}— переключил ноду $cur -> $b (работает по всем этим сервисам)"
+      # Матрица строится раз в час, а ноды дохнут когда им вздумается. Выбор
+      # по ней — это выбор по вчерашним данным, и так селектор однажды сел на
+      # ноду, которая уже не пропускала ничего. Поэтому проверяем результат
+      # той же дорогой, которой пойдёт трафик.
+      sleep 2
+      c=$(curl -s -o /dev/null -m 12 -w '%{http_code}' \
+            --socks5-hostname "127.0.0.1:$SOCKS_PORT" https://www.gstatic.com/generate_204 2>/dev/null)
+      case "$c" in
+        2??|3??) logline "лежат: ${broken}— переключил ноду $cur -> $b (проверено, проходит)" ;;
+        *)
+          logline "лежат: ${broken}— $b выбрана по матрице, но не пропускает (код ${c:-000}) — беру по живому пингу"
+          RCTL_LOCAL=1 /usr/sbin/rctl nodes best 2>&1 | while IFS= read -r l; do logline "  $l"; done
+          rm -f "$SCORE"   # матрица врёт — пересоберётся в следующий заход
+          ;;
+      esac
     else
       logline "лежат: ${broken}— не смог переключить на $b (код $r)"
     fi
   else
     logline "лежат: ${broken}— замены нет, ни одна нода не тянет весь этот набор"
+    # Это единственный случай, когда автоматика бессильна. Молчать про него
+    # нельзя: до сих пор о таком узнавали, только когда сами лезли проверять.
+    tell "Не работают: ${broken}— и ни одна нода из подписки их не тянет. Похоже на подписку, а не на роутер: /nodes, /status."
   fi
 
   [ -f "$LOG" ] && tail -5 "$LOG" || echo "автоматике пока нечего было делать"

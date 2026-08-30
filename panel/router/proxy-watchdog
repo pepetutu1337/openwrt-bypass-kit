@@ -1,0 +1,101 @@
+#!/bin/sh
+# proxy-watchdog — следит за тем, что через ноду реально ходит трафик.
+#
+# Прежний сторож спрашивал у clash задержку группы `auto`. Но селектор почти
+# всегда закреплён на конкретной ноде — руками, кнопкой «самый быстрый» или
+# ботом, — и тогда `auto` меряет ноду, через которую не идёт ни один пакет.
+# Ловилось живьём: active_node нода легла, инстаграм, клод и телеграм отвалились
+# все разом, а сторож каждые три минуты рапортовал «всё хорошо».
+#
+# Поэтому проверка идёт по той же дороге, что и трафик людей: запрос через
+# SOCKS ноды. Что через него не прошло — не пройдёт и у человека.
+#
+# Порядок лечения: сначала пересесть на живую ноду (это чинит настоящую
+# причину), и только если не помогло — перезапускать ядро.
+set -u
+
+SOCKS=${PW_SOCKS:-127.0.0.1:1180}
+API=${CLASH_API:-127.0.0.1:9090}
+RCTL=/usr/sbin/rctl
+STAMP=/tmp/proxy-watchdog.last
+
+# Две мишени разных владельцев: одна может лежать сама по себе, обе разом —
+# уже дорога.
+T1=${PW_T1:-https://www.gstatic.com/generate_204}
+T2=${PW_T2:-https://www.instagram.com/}
+
+say() { logger -t proxy-watchdog "$1"; }
+
+# Кому доложить. Сторож молчит, пока всё хорошо, и пишет один раз по факту
+# починки: иначе о поломке узнаёшь, только когда сам полез проверять.
+tell() {
+  [ -f /etc/rctl-bot.conf ] || return 0
+  # shellcheck disable=SC1091
+  . /etc/rctl-bot.conf 2>/dev/null || return 0
+  [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
+  for chat in $BOT_ALLOW; do
+    curl -s -o /dev/null -m 15 --socks5-hostname "${BOT_PROXY:-$SOCKS}" \
+      "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+      --data-urlencode "chat_id=$chat" \
+      --data-urlencode "text=$1" 2>/dev/null || true
+  done
+}
+
+# Один заход по настоящей дороге: код ответа через SOCKS ноды.
+# Имена функций тут латиницей не для красоты: busybox ash не принимает в них
+# кириллицу — вызов превращается в «not found», и сторож начинает лечить
+# здорового. Поймал при первом же прогоне на роутере.
+via_node() {
+  curl -s -o /dev/null -m "${2:-12}" -w '%{http_code}' \
+    --socks5-hostname "$SOCKS" "$1" 2>/dev/null
+}
+
+passes() {
+  c1=$(via_node "$T1"); case "$c1" in 2??|3??) return 0 ;; esac
+  c2=$(via_node "$T2"); case "$c2" in 2??|3??) return 0 ;; esac
+  return 1
+}
+
+active_node() {
+  sel=$(curl -s -m 4 "http://$API/proxies/proxy" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p')
+  [ "$sel" = auto ] && sel=$(curl -s -m 4 "http://$API/proxies/auto" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p')
+  echo "$sel"
+}
+
+passes && exit 0
+sleep 4
+passes && exit 0
+
+was=$(active_node)
+say "через ноду ($was) не проходит ни одна мишень — пересаживаюсь"
+
+# 1. Пересесть на живую. Это лечит саму причину: нода умерла, а селектор на ней.
+RCTL_LOCAL=1 $RCTL nodes best >/dev/null 2>&1
+sleep 3
+if passes; then
+  now_node=$(active_node)
+  say "помогло: $was -> $now_node"
+  # не частим: одно сообщение в час, даже если ноды сыплются одна за другой
+  now=$(date +%s); last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  if [ $((now - last)) -gt 3600 ]; then
+    echo "$now" > "$STAMP"
+    tell "Нода «$was» перестала пропускать трафик — пересел на «$now_node». Сайты через прокси снова работают."
+  fi
+  exit 0
+fi
+
+# 2. Не помогло — перезапустить ядро.
+say "смена ноды не помогла — перезапускаю sing-box"
+/etc/init.d/sing-box restart >/dev/null 2>&1
+sleep 8
+if passes; then
+  say "поднялось после перезапуска (нода $(active_node))"
+  exit 0
+fi
+
+say "через ноду по-прежнему не проходит — нужен разбор руками"
+now=$(date +%s); last=$(cat "$STAMP" 2>/dev/null || echo 0)
+if [ $((now - last)) -gt 3600 ]; then
+  echo "$now" > "$STAMP"
+  tell "Прокси не работает: ни одна нода не пропускает трафик, перезапуск ядра не помог. Проверь подписку — /nodes, /status."
+fi
