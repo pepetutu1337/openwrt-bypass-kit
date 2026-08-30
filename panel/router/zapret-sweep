@@ -37,12 +37,36 @@ candidates() {
     }'
 }
 
-# одна проба скорости: КБ/с, 0 если не открылось
+# Узлы CDN для проверки доступности видео-пути. Скорость страницы плеера
+# сама по себе ничего не решает: страницу отдают всегда, поэтому по ней все
+# кандидаты выглядели одинаково хорошо и свип каждый раз оставлял прежнюю
+# стратегию. Режут именно googlevideo, по нему и меряем.
+CDN_HOSTS=${SWEEP_CDN_HOSTS:-"rr1---sn-4g5e6nzz rr2---sn-4g5ednse rr3---sn-4g5edned rr4---sn-4g5e6nz7 redirector"}
+
+# Сколько узлов CDN пробилось. Это главный показатель: стратегия либо
+# проходит фильтр, либо нет.
+cdn_live() {
+  live=0; total=0
+  for h in $CDN_HOSTS; do
+    total=$((total + 1))
+    c=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code}' \
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || c=000
+    case "$c" in 200|204) live=$((live + 1)) ;; esac
+  done
+  echo "$live $total"
+}
+
+# Одна проба: «очки живых_из_всех КБ/с код». Очки = узлы*1000 + КБ/с, чтобы
+# доступность решала, а скорость страницы служила только доводчиком между
+# кандидатами, пробившими одинаковое число узлов.
 speed() {
+  set -- $(cdn_live)
+  live=$1; total=$2
   r=$(curl -sS -m 40 -o /tmp/sweep.page -w '%{http_code} %{speed_download}' "$VIDEO" 2>/dev/null) || r="000 0"
   set -- $r
-  [ "$1" = 200 ] || { echo "0 $1"; return; }
-  echo "$(( ${2%%.*} / 1024 )) $1"
+  code=$1
+  [ "$code" = 200 ] && kb=$(( ${2%%.*} / 1024 )) || kb=0
+  echo "$((live * 1000 + kb)) $live/$total $kb $code"
 }
 
 # Меняем строку 443 ТОЛЬКО внутри NFQWS_OPT. Строки с тем же началом есть
@@ -87,28 +111,27 @@ cmd_start() {
     trap 'restore; echo "aborted $(date +%s)" > "$STATE"; rm -f "$PIDF"' INT TERM
 
     # базовая точка: текущая стратегия, чтобы было с чем сравнивать
-    base=$(speed); set -- $base
-    echo "base $1 $2 (текущая стратегия)" >> "$OUT"
+    echo "base $(speed) (текущая стратегия)" >> "$OUT"
 
     echo "$cands" | while read -r s; do
       [ -n "$s" ] || continue
       if apply_strategy "$s"; then
-        r=$(speed); set -- $r
-        kb=$1; code=$2
+        set -- $(speed)
+        sc=$1; nodes=$2; kb=$3; code=$4
         # вторая проба: линия флапает, одиночный замер врёт
-        r2=$(speed); set -- $r2
-        [ "$1" -gt "$kb" ] 2>/dev/null && { kb=$1; code=$2; }
-        echo "cand $kb $code $s" >> "$OUT"
+        set -- $(speed)
+        [ "$1" -gt "$sc" ] 2>/dev/null && { sc=$1; nodes=$2; kb=$3; code=$4; }
+        echo "cand $sc $nodes $kb $code $s" >> "$OUT"
       else
-        echo "cand 0 cfg $s" >> "$OUT"
+        echo "cand 0 0/0 0 cfg $s" >> "$OUT"
       fi
     done
 
-    # победитель: максимум КБ/с среди кандидатов
+    # победитель: максимум очков среди кандидатов
     best=$(grep '^cand ' "$OUT" | sort -k2 -nr | head -1)
     bkb=$(echo "$best" | awk '{print $2}')
     basekb=$(grep '^base ' "$OUT" | awk '{print $2}')
-    bstrat=$(echo "$best" | cut -d' ' -f4-)
+    bstrat=$(echo "$best" | cut -d' ' -f6-)
 
     if [ -n "$bkb" ] && [ "$bkb" -gt "$basekb" ] 2>/dev/null; then
       apply_strategy "$bstrat" || restore
@@ -140,24 +163,24 @@ cmd_status() {
   esac
   echo "прошло: $((el / 60)) мин $((el % 60)) с"
   echo "проверено кандидатов: $(grep -c '^cand ' "$OUT" 2>/dev/null || echo 0) из $total"
-  b=$(grep '^base ' "$OUT" 2>/dev/null | awk '{print $2}')
-  [ -n "$b" ] && echo "было: $b КБ/с"
-  best=$(grep '^cand ' "$OUT" 2>/dev/null | sort -k2 -nr | head -1 | awk '{print $2}')
-  [ -n "$best" ] && echo "лучшее пока: $best КБ/с"
+  b=$(grep '^base ' "$OUT" 2>/dev/null | awk '{print $3" узлов, "$4" КБ/с"}')
+  [ -n "$b" ] && echo "было: $b"
+  best=$(grep '^cand ' "$OUT" 2>/dev/null | sort -k2 -nr | head -1 | awk '{print $3" узлов, "$4" КБ/с"}')
+  [ -n "$best" ] && echo "лучшее пока: $best"
   w=$(grep '^winner ' "$OUT" 2>/dev/null)
   [ -n "$w" ] && echo "итог: $(echo "$w" | cut -d' ' -f2-)"
 }
 
 cmd_result() {
   [ -f "$OUT" ] || { echo "результатов нет"; exit 0; }
-  b=$(grep '^base ' "$OUT" | awk '{print $2}')
-  echo "было: ${b:-?} КБ/с"
+  b=$(grep '^base ' "$OUT" | awk '{print $3" узлов CDN, "$4" КБ/с"}')
+  echo "было: ${b:-?}"
   echo ""
   # "tbl|" — панель нарисует настоящую таблицу (см. свод в svcprobe scorelog)
-  echo "tbl|скорость|код|стратегия"
+  echo "tbl|узлы CDN|скорость|код|стратегия"
   grep '^cand ' "$OUT" | sort -k2 -nr |
-    while read -r _ kb code strat; do
-      echo "tbl|$kb КБ/с|$code|$strat"
+    while read -r _ _ nodes kb code strat; do
+      echo "tbl|$nodes|$kb КБ/с|$code|$strat"
     done
   w=$(grep '^winner ' "$OUT")
   [ -n "$w" ] && { echo ""; echo "итог: $(echo "$w" | cut -d' ' -f2-)"; }

@@ -21,12 +21,39 @@ set -u
 LOG=/tmp/ytwatch.log
 URLF=/tmp/ytwatch.url
 PAGE=${YTWATCH_PAGE:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}
-CDN=${YTWATCH_CDN:-https://redirector.googlevideo.com/generate_204}
 # ниже этого считаем, что поток душат (КБ/с)
 SLOW_KB=${YTWATCH_SLOW_KB:-150}
 KEEP=${YTWATCH_KEEP:-400}
 
+# Одного хоста CDN мало. googlevideo.com — это сотни узлов, и DNS отдаёт то
+# франкфуртский адрес (443 режут наглухо), то финский (проходит). Проверка по
+# одному имени поэтому давала рваный журнал — то 204, то 000 — без всякой
+# связи с тем, идёт видео или нет, и самолечение на таком шуме не срабатывало.
+# Берём несколько имён сразу: доля пробившихся — устойчивый показатель.
+CDN_HOSTS=${YTWATCH_CDN_HOSTS:-"rr1---sn-4g5e6nzz rr2---sn-4g5ednse rr3---sn-4g5edned rr4---sn-4g5e6nz7 redirector"}
+# ниже этой доли живых узлов считаем путь до видео перекрытым (в процентах)
+CDN_MIN=${YTWATCH_CDN_MIN:-60}
+
 kbps() { echo $(( ${1%%.*} / 1024 )); }
+
+# Печатает «живых всего мс». Трафика почти нет: только TLS-рукопожатие и
+# пустой ответ 204 на каждый узел.
+cdn_probe() {
+  live=0; total=0; ms=0
+  for h in $CDN_HOSTS; do
+    total=$((total + 1))
+    r=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code} %{time_total}' \
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || r="000 6"
+    set -- $r
+    case "$1" in
+      200|204)
+        live=$((live + 1))
+        [ "$ms" = 0 ] && ms=$(awk -v x="$2" 'BEGIN{printf "%d", x*1000}')
+        ;;
+    esac
+  done
+  echo "$live $total $ms"
+}
 
 # $1 = light: только хендшейк до CDN. Полный замер качает мегабайты, и в
 # кроне раз в 10 минут это под гигабайт в сутки чужого трафика — поэтому
@@ -35,14 +62,13 @@ cmd_sample() {
   light=${1:-}
   ts=$(date +%s)
 
-  # 1. путь до CDN видео: только хендшейк, трафика почти нет
-  r=$(curl -sS -o /dev/null -m 10 -w '%{http_code} %{time_total}' "$CDN" 2>/dev/null) || r="000 10"
-  set -- $r
-  cdn_code=$1
-  cdn_ms=$(awk -v x="$2" 'BEGIN{printf "%d", x*1000}')
+  # 1. путь до видео: рукопожатие до нескольких узлов CDN, трафика почти нет
+  set -- $(cdn_probe)
+  cdn_live=$1; cdn_total=$2; cdn_ms=$3
+  [ "$cdn_live" -gt 0 ] && cdn_code=204 || cdn_code=000
 
   if [ "$light" = light ]; then
-    echo "$ts $cdn_code $cdn_ms - -1 - -1" >> "$LOG"
+    echo "$ts $cdn_code $cdn_ms - -1 - -1 $cdn_live/$cdn_total" >> "$LOG"
     tail -"$KEEP" "$LOG" > "$LOG.trim" 2>/dev/null && mv "$LOG.trim" "$LOG"
     cmd_log 1
     return 0
@@ -66,15 +92,26 @@ cmd_sample() {
     fi
   fi
 
-  echo "$ts $cdn_code $cdn_ms $page_code $page_kb $vid_code $vid_kb" >> "$LOG"
+  echo "$ts $cdn_code $cdn_ms $page_code $page_kb $vid_code $vid_kb $cdn_live/$cdn_total" >> "$LOG"
   # журнал живёт в tmpfs, не даём ему расти бесконечно
   tail -"$KEEP" "$LOG" > "$LOG.trim" 2>/dev/null && mv "$LOG.trim" "$LOG"
 
   cmd_log 1
 }
 
-verdict() { # $1 cdn_code $2 page_kb $3 vid_kb
+verdict() { # $1 cdn_code $2 page_kb $3 vid_kb $4 живых/всего (может не быть)
   if [ "$1" != 204 ] && [ "$1" != 200 ]; then echo "путь до CDN лёг"; return; fi
+  # Частичная доступность — это и есть нынешнее блокирование: часть узлов
+  # googlevideo отвечает, часть режут по адресу. Плеер выбирает узел сам, и
+  # попадание на перекрытый выглядит как «видео зависло на ровном месте».
+  case "${4:-}" in
+    */*)
+      l=${4%%/*}; t=${4##*/}
+      if [ "$t" -gt 0 ] 2>/dev/null && [ $((l * 100 / t)) -lt "$CDN_MIN" ]; then
+        echo "CDN режут ($4)"; return
+      fi
+      ;;
+  esac
   if [ "$2" = "-1" ] && [ "$3" = "-1" ]; then echo "путь жив (лёгкая проверка)"; return; fi
   if [ "$3" -ge 0 ] 2>/dev/null; then
     [ "$3" -lt "$SLOW_KB" ] && { echo "видео душат"; return; }
@@ -87,12 +124,14 @@ verdict() { # $1 cdn_code $2 page_kb $3 vid_kb
 cmd_log() {
   n=${1:-24}
   [ -f "$LOG" ] || { echo "замеров ещё не было"; return 0; }
-  echo "tbl|время|CDN|страница|видео|итог"
-  tail -"$n" "$LOG" | while read -r ts cc cms pc pkb vc vkb; do
+  echo "tbl|время|узлы CDN|страница|видео|итог"
+  tail -"$n" "$LOG" | while read -r ts cc cms pc pkb vc vkb cdn; do
     t=$(date -d "@$ts" '+%d.%m %H:%M' 2>/dev/null || date -r "$ts" '+%d.%m %H:%M' 2>/dev/null || echo "$ts")
     [ "$vkb" -ge 0 ] 2>/dev/null && v="$vkb КБ/с" || v="—"
     [ "$pkb" -ge 0 ] 2>/dev/null && p="$pkb КБ/с" || p="—"
-    echo "tbl|$t|$cc / $cms мс|$p|$v|$(verdict "$cc" "$pkb" "$vkb")"
+    # строки, записанные до перехода на несколько узлов, поля «живых» не имеют
+    [ -n "${cdn:-}" ] && c="$cdn живых / $cms мс" || c="$cc / $cms мс"
+    echo "tbl|$t|$c|$p|$v|$(verdict "$cc" "$pkb" "$vkb" "${cdn:-}")"
   done
 }
 
@@ -139,39 +178,74 @@ cmd_stat() {
 # он гоняет кандидатов на живом обходе и оставляет самого быстрого.
 # Ноду не трогаем: видео идёт мимо неё.
 HEAL_STAMP=/tmp/ytwatch.heal
-HEAL_AFTER=${YTWATCH_HEAL_AFTER:-3}      # плохих замеров подряд
+HEAL_WINDOW=${YTWATCH_HEAL_WINDOW:-12}   # сколько последних замеров смотрим
+HEAL_AFTER=${YTWATCH_HEAL_AFTER:-5}      # плохих в этом окне — повод лечить
 HEAL_COOLDOWN=${YTWATCH_HEAL_COOLDOWN:-21600}   # не чаще раза в 6 часов
+HEAL_HOUR_FROM=${YTWATCH_HEAL_HOUR_FROM:-3}     # окно, когда можно гасить обход
+HEAL_HOUR_TO=${YTWATCH_HEAL_HOUR_TO:-7}
+# Подбирать стратегию надо под то, что реально режут. youtube.com открывается
+# всегда, поэтому blockcheck по нему находил «рабочими» полсотни стратегий,
+# ни одна из которых не чинила видео.
+HEAL_DOMAIN=${YTWATCH_HEAL_DOMAIN:-rr1---sn-4g5e6nzz.googlevideo.com}
 
 cmd_heal() {
   [ -f "$LOG" ] || { echo "замеров ещё не было"; return 0; }
 
-  # считаем ХВОСТ подряд идущих плохих замеров, лёгкие проверки пропускаем
-  bad=$(awk -v s="$SLOW_KB" '
-    ($5=="-1" && $7=="-1") { next }                     # лёгкая проверка, не в счёт
-    { line[++n] = (($2!=204 && $2!=200) || ($7>=0 && $7<s) || ($7<0 && $5<s)) ? 1 : 0 }
-    END { c=0; for (i=n; i>=1; i--) { if (line[i]) c++; else break } print c }
+  # Раньше считался ХВОСТ подряд идущих плохих замеров — и не срабатывало
+  # никогда: перекрыта часть узлов CDN, а не все, так что журнал чередует
+  # плохое с хорошим и счётчик обнуляется на каждом удачном замере. Считаем
+  # долю плохих в окне последних замеров — рваная картина как раз и есть
+  # признак болезни, а не здоровья.
+  bad=$(awk -v s="$SLOW_KB" -v w="$HEAL_WINDOW" -v cmin="$CDN_MIN" '
+    { line[++n] = row() }
+    function row(   l, t) {
+      if ($2 != 204 && $2 != 200) return 1                # путь до CDN лёг
+      if ($8 ~ /\//) {                                    # доля живых узлов
+        split($8, a, "/"); l = a[1]; t = a[2]
+        if (t > 0 && l * 100 / t < cmin) return 1
+      }
+      if ($5 == "-1" && $7 == "-1") return 0              # лёгкая проверка
+      if ($7 >= 0) return ($7 < s) ? 1 : 0                # честный кусок видео
+      return ($5 >= 0 && $5 < s) ? 1 : 0                  # иначе страница
+    }
+    END { c = 0; for (i = n; i >= 1 && i > n - w; i--) c += line[i]; print c }
   ' "$LOG")
 
   if [ "${bad:-0}" -lt "$HEAL_AFTER" ]; then
-    echo ":: подряд плохих замеров: ${bad:-0} из $HEAL_AFTER — лечить нечего"
+    echo ":: плохих замеров: ${bad:-0} из последних $HEAL_WINDOW (лечим от $HEAL_AFTER) — лечить нечего"
     return 0
   fi
 
   now=$(date +%s)
   last=$(cat "$HEAL_STAMP" 2>/dev/null || echo 0)
   if [ $((now - last)) -lt "$HEAL_COOLDOWN" ]; then
-    echo ":: душилово держится ($bad подряд), но свип уже гоняли $(( (now - last) / 60 )) мин назад — жду"
+    echo ":: душилово держится ($bad из $HEAL_WINDOW), но свип уже гоняли $(( (now - last) / 60 )) мин назад — жду"
     return 0
   fi
 
   echo "$now" > "$HEAL_STAMP"
-  echo ":: душилово $bad замеров подряд — запускаю подбор стратегии"
-  # свежие кандидаты есть только после blockcheck; если их нет, сначала он
+  echo ":: плохих $bad из последних $HEAL_WINDOW — запускаю подбор стратегии"
+
+  # Свежие кандидаты есть только после blockcheck. Но blockcheck на время
+  # работы гасит zapret — у всех в доме отваливается обход на несколько
+  # минут. Днём это делать нельзя, поэтому ждём тихого часа. Исключение:
+  # если не отвечает НИ ОДИН узел CDN, обход и так уже ничего не даёт,
+  # и терять нечего.
   if ! /usr/sbin/zapret-tune result 2>/dev/null | grep -q .; then
-    echo ":: кандидатов нет, сначала blockcheck (обход на это время отключится)"
-    /usr/sbin/zapret-tune start youtube.com quick
+    h=$(date +%H)
+    dead=$(tail -1 "$LOG" | awk '{split($8,a,"/"); print (a[1]=="0") ? 1 : 0}')
+    if [ "${dead:-0}" != 1 ] && { [ "$h" -lt "$HEAL_HOUR_FROM" ] || [ "$h" -ge "$HEAL_HOUR_TO" ]; }; then
+      echo ":: кандидатов нет, а blockcheck гасит обход — жду тихого часа ($HEAL_HOUR_FROM:00-$HEAL_HOUR_TO:00)"
+      rm -f "$HEAL_STAMP"   # не тратим кулдаун впустую
+      return 0
+    fi
+    echo ":: кандидатов нет, запускаю blockcheck (обход на это время отключится)"
+    /usr/sbin/zapret-tune start "$HEAL_DOMAIN" quick
     return 0
   fi
+
+  # Свип не гасит обход: гоняет кандидатов на живом zapret и оставляет
+  # лучшего — его можно и днём.
   /usr/sbin/zapret-sweep start 8
 }
 

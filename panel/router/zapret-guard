@@ -1,0 +1,59 @@
+#!/bin/sh
+# zapret-guard — страховка от «обход лёг и не встал».
+#
+# Подбор стратегии (zapret-tune) на время работы гасит zapret, а свип
+# (zapret-sweep) многократно его перезапускает. Оба возвращают всё на место
+# сами — и штатно, и по trap. Но trap не спасает от kill -9, от обрыва
+# питания посреди прогона и от зависшего blockcheck: в этих случаях весь дом
+# остаётся без обхода и никто об этом не узнает.
+#
+# Страж запускается из крона часто и делает ровно две вещи:
+#   · висящий дольше срока подбор — прибить и вернуть обход;
+#   · zapret не работает, а подбора нет — поднять.
+#
+# Сам ничего не настраивает и стратегию не трогает.
+set -u
+
+MAX_TUNE=${ZG_MAX_TUNE:-1800}     # дольше 30 мин blockcheck не идёт никогда
+MAX_SWEEP=${ZG_MAX_SWEEP:-3600}   # свип: ~50 с на кандидата, 12 кандидатов + запас
+
+say() { logger -t zapret-guard "$1"; echo "$1"; }
+
+# $1 — pid-файл, $2 — предел в секундах, $3 — имя, $4 — команда остановки
+watch_job() {
+  pidf=$1; limit=$2; name=$3; stopper=$4
+  [ -f "$pidf" ] || return 0
+  pid=$(cat "$pidf" 2>/dev/null)
+  [ -n "$pid" ] || { rm -f "$pidf"; return 0; }
+  if ! kill -0 "$pid" 2>/dev/null; then
+    # процесса нет, а pid-файл остался: прогон умер, не прибравшись
+    rm -f "$pidf"
+    say "$name умер, не прибравшись — привожу обход в порядок"
+    $stopper >/dev/null 2>&1
+    /etc/init.d/zapret start >/dev/null 2>&1
+    return 0
+  fi
+  started=$(sed -n 's/^[a-z]* \([0-9]*\).*/\1/p' "${pidf%.pid}.state" 2>/dev/null)
+  [ -n "$started" ] || return 0
+  el=$(( $(date +%s) - started ))
+  if [ "$el" -gt "$limit" ]; then
+    say "$name идёт $((el / 60)) мин — это дольше предела, прерываю"
+    $stopper >/dev/null 2>&1
+    /etc/init.d/zapret start >/dev/null 2>&1
+  fi
+}
+
+watch_job /tmp/zapret-tune.pid  "$MAX_TUNE"  "подбор стратегии" "/usr/sbin/zapret-tune stop"
+watch_job /tmp/zapret-sweep.pid "$MAX_SWEEP" "свип стратегий"   "/usr/sbin/zapret-sweep stop"
+
+# Последний рубеж: обхода нет, и никто его сейчас не подбирает.
+running=0
+for p in /tmp/zapret-tune.pid /tmp/zapret-sweep.pid; do
+  [ -f "$p" ] && kill -0 "$(cat "$p" 2>/dev/null)" 2>/dev/null && running=1
+done
+if [ "$running" = 0 ] && ! pidof nfqws >/dev/null 2>&1; then
+  say "nfqws не работает и подбор не идёт — поднимаю zapret"
+  /etc/init.d/zapret start >/dev/null 2>&1
+  sleep 3
+  pidof nfqws >/dev/null 2>&1 && say "обход поднялся" || say "обход НЕ поднялся — нужен разбор руками"
+fi
