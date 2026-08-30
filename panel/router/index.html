@@ -980,18 +980,36 @@ function workOff(){
 /* ---------- запрос к роутеру ----------
    Фоновый опрос статуса не блокирует действия пользователя: общий флаг
    busy раньше глотал нажатия молча. */
-async function api(act, v){
+async function api(act, v, onLine){
   const u = 'cgi-bin/api?a=' + encodeURIComponent(act) + (v ? '&v=' + encodeURIComponent(v) : '');
   const r = await fetch(u, {cache:'no-store'});
-  return await r.text();
+  // rctl пишет построчно, uhttpd эти строки пропускает сразу (проверено:
+  // строки приходят по одной в секунду, а не пачкой в конце). Копил именно
+  // фронт: `await r.text()` ждал всего ответа, и замер сорока пяти серверов
+  // выглядел двухминутным зависанием с одним крутящимся кружком.
+  if (!onLine || !r.body || !r.body.getReader) return await r.text();
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let text = '';
+  for (;;){
+    const {done, value} = await reader.read();
+    if (done) break;
+    text += dec.decode(value, {stream:true});
+    // Отдаём только целые строки: хвост чанка бывает обрезан на середине
+    // слова, и разборщики таблиц об него спотыкаются.
+    const cut = text.lastIndexOf('\n');
+    if (cut >= 0) onLine(text.slice(0, cut + 1));
+  }
+  text += dec.decode();
+  return text;
 }
 
-async function call(act, v, btn){
+async function call(act, v, btn, onLine){
   userBusy++;
   if (btn) { btn.classList.add('busy'); btn.disabled = true; }
   workOn(act);
   try {
-    return await api(act, v);
+    return await api(act, v, onLine);
   } catch(e){
     toast('Роутер не отвечает. Проверь Wi-Fi');
     return null;
@@ -1270,9 +1288,18 @@ async function tuneResults(){
 /* ---------- запуск действий ---------- */
 async function run(act, v, btn){
   if (act === 'nodes') nodeSkeleton();
-  const t = await call(act, v, btn);
+  // Подпись ставится один раз, до прогона: она отмечает, когда начали, и не
+  // должна прыгать на каждой пришедшей строке.
+  const head = stamp(act);
+  const живьём = готово => {
+    paint(head + готово);
+    // Таблица приходит в самом конце, но если она уже пришла — плитки
+    // серверов заполняются, не дожидаясь конца ответа.
+    if (act === 'nodes') readNodes(готово);
+  };
+  const t = await call(act, v, btn, живьём);
   if (t === null) return;
-  paint(stamp(act) + t);
+  paint(head + t);
   if (act === 'nodes') readNodes(t);
 
   const first = (t.split('\n').find(l => l.trim()) || '').replace(/^[✓✗·!]\s*/, '');
