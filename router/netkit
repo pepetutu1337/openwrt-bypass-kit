@@ -22,9 +22,15 @@ CFG=/etc/netkit
 # split-DNS: РФ-зоны через российский резолвер (чинит VTB и пр., что прячут DNS от иностранцев)
 : "${SPLIT_RU_ENABLE:=1}"; : "${RU_DNS:=77.88.8.8}"; : "${RU_DNS2:=77.88.8.1}"
 : "${RU_DOH_ENABLE:=1}"; : "${RU_DOH_PORT:=5055}"; : "${RU_DOH_UPSTREAM:=https://77.88.8.8/dns-query}"
+# Порт резолвера, который ходит через ноду: запасной путь для dnsmasq на случай,
+# когда до публичных DoH-адресов не достучаться.
+: "${NODE_DNS_PORT:=5056}"
 # авто-список ушедших из РФ сервисов
 : "${GEOBLOCK_ENABLE:=1}"; : "${GEOBLOCK_CRON:=15 4 * * *}"
 : "${GEOBLOCK_URL:=https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Categories/geoblock.lst}"
+: "${GEOBLOCK_URL2:=https://cdn.jsdelivr.net/gh/itdoginfo/allow-domains@main/Categories/geoblock.lst}"
+: "${GEOBLOCK_URL3:=https://gh-proxy.com/https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Categories/geoblock.lst}"
+: "${GEOBLOCK_MAXAGE:=1209600}"
 # сторож нод (авто-восстановление прокси)
 : "${WATCHDOG_ENABLE:=1}"; : "${WATCHDOG_CRON:=*/3 * * * *}"
 # авто-обновление CIDR Telegram (MTProto ходит по IP, список протухает)
@@ -133,16 +139,39 @@ EOF
     --argjson rport "$REDIRECT_PORT" \
     --argjson sport "$SOCKS_DIAG" \
     --arg interval "$FAILOVER_INTERVAL" \
-    --argjson fo "$([ "$FAILOVER" = 1 ] && echo true || echo false)" '
+    --argjson fo "$([ "$FAILOVER" = 1 ] && echo true || echo false)" \
+    --argjson dnsport "$NODE_DNS_PORT" \
+    --arg rudns "$RU_DNS" \
+    --arg rudns2 "${RU_DNS2:-$RU_DNS}" '
     {
       log:{level:"warn",timestamp:true},
       experimental:{clash_api:{external_controller:"127.0.0.1:9090"}},
+      # Резолвер, который ходит ЧЕРЕЗ ноду. Он нужен не вместо https-dns-proxy,
+      # а на случай, когда тот перестанет работать: адреса публичных резолверов
+      # известны наперечёт, и закрыть к ним 443 — работа на полчаса. Запрос
+      # внутри туннеля так закрыть нельзя, не закрыв туннель.
+      #
+      # Второй резолвер, doh-direct, нужен самому ядру: часть нод задана
+      # именем, и его надо чем-то разрешать ДО того, как нода поднята. Отсюда и
+      # правило маршрута ниже — российский резолвер ходит только напрямую,
+      # иначе получается круг: чтобы поднять ноду, нужно имя, а чтобы получить
+      # имя, нужна нода. detour:"direct" тут не годится, ядро отвергает
+      # «detour в пустой direct» (проверено живьём на 1.12.17).
+      dns:{
+        servers:[
+          {type:"https",tag:"doh-node",server:"1.1.1.1",detour:"proxy"},
+          {type:"https",tag:"doh-direct",server:$rudns}
+        ],
+        final:"doh-node",
+        strategy:"ipv4_only"
+      },
       inbounds:[
         # sniff_override_destination:true — соединение уходит на ноду доменом,
         # а не локально нарезолвленным адресом. Иначе проксируемый сайт может
         # не открываться из-за протухшего или подменённого локального ответа DNS.
         {type:"redirect",tag:"redir",listen:"0.0.0.0",listen_port:$rport,sniff:true,sniff_override_destination:true},
-        {type:"socks",tag:"diag",listen:"127.0.0.1",listen_port:$sport}
+        {type:"socks",tag:"diag",listen:"127.0.0.1",listen_port:$sport},
+        {type:"direct",tag:"dns-in",listen:"127.0.0.1",listen_port:$dnsport,network:"udp"}
       ],
       outbounds:
         ($outs)
@@ -150,7 +179,12 @@ EOF
         + (if $fo then [ {type:"urltest",tag:"auto",outbounds:$tags,url:"https://www.gstatic.com/generate_204",interval:$interval,tolerance:80} ] else [] end)
         + [ {type:"direct",tag:"direct"} ],
       route:{
-        rules:[ {ip_is_private:true,outbound:"direct"} ],
+        default_domain_resolver:{server:"doh-direct"},
+        rules:[
+          {inbound:["dns-in"],action:"hijack-dns"},
+          {ip_is_private:true,outbound:"direct"},
+          {ip_cidr:[($rudns+"/32"),($rudns2+"/32")],outbound:"direct"}
+        ],
         final:"proxy",
         auto_detect_interface:true
       }
@@ -227,6 +261,13 @@ gen_dns_upstream() {
   uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null || true
   uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$DOH_PORT"
   [ -n "$DOH_PORT2" ] && uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$DOH_PORT2"
+  # Третьим — резолвер, уходящий через ноду. dnsmasq сам предпочитает тот
+  # апстрим, что отвечает быстрее, поэтому в обычное время он туда почти не
+  # ходит: путь через туннель заведомо длиннее. Но если до публичных
+  # DoH-адресов однажды не достучаться — а закрыть 443 к десятку известных
+  # адресов дело недолгое, — дом останется с DNS, потому что запрос внутри
+  # туннеля так не закрыть, не закрыв туннель.
+  [ "$PROXY_ENABLE" = 1 ] && uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$NODE_DNS_PORT"
   uci set dhcp.@dnsmasq[0].noresolv='1'
   uci commit dhcp
 }
@@ -433,12 +474,45 @@ EOF
 #!/bin/sh
 # генерируется netkit. Тянет список ушедших-из-РФ сервисов в наборы proxy4/6.
 set -eu
-URL="$GEOBLOCK_URL"
+URLS="$GEOBLOCK_URL $GEOBLOCK_URL2 $GEOBLOCK_URL3"
+MAXAGE=$GEOBLOCK_MAXAGE
 OUT="$GEOBLOCKD"
 EXCL=/etc/geoblock-exclude.txt
 TMP=/tmp/geoblock.lst
+STAMP=/etc/geoblock.stamp
+TOLD=/tmp/geoblock.told
+QUEUE=/tmp/notify.queue
 log() { logger -t geoblock "\$*"; echo "\$*"; }
-curl -fsSL -m 40 "\$URL" -o "\$TMP" 2>/dev/null || { log "download FAILED, оставляю старый список"; exit 1; }
+
+# Сказать хозяину через общую очередь: её разбирает proxy-watchdog первым
+# здоровым заходом. Не чаще раза в сутки — беда тут тянется неделями.
+tell() {
+  now=\$(date +%s); last=\$(cat "\$TOLD" 2>/dev/null || echo 0)
+  [ \$((now - last)) -gt 86400 ] || return 0
+  printf '%s %s\\n' "\$(date '+%d.%m %H:%M') —" "\$1" >> "\$QUEUE"
+  echo "\$now" > "\$TOLD"
+}
+
+# Зеркала по очереди. Одного источника мало: список — единственное, откуда
+# роутер узнаёт о новых уехавших сервисах, и его молчание не видно никак.
+# Обход продолжает работать, просто перестаёт узнавать новое, и это тянется,
+# пока однажды не окажется, что половина нужного идёт мимо ноды.
+got=0
+for u in \$URLS; do
+  [ -n "\$u" ] || continue
+  if curl -fsSL -m 40 "\$u" -o "\$TMP" 2>/dev/null && [ -s "\$TMP" ]; then got=1; break; fi
+  log "зеркало молчит: \$u"
+done
+if [ "\$got" = 0 ]; then
+  log "ни одно зеркало не ответило, оставляю старый список"
+  now=\$(date +%s); had=\$(cat "\$STAMP" 2>/dev/null || echo 0)
+  if [ "\$had" = 0 ]; then
+    tell "Список геоблока ни разу не скачался — новые уехавшие сервисы пойдут мимо ноды."
+  elif [ \$((now - had)) -gt "\$MAXAGE" ]; then
+    tell "Список геоблока не обновляется \$(( (now - had) / 86400 )) сут: все зеркала молчат. Обход работает, но о новых уехавших сервисах роутер не узнаёт."
+  fi
+  exit 1
+fi
 tmpd=\$(mktemp); tmpe=\$(mktemp)
 trap 'rm -f "\$tmpd" "\$tmpe"' EXIT
 grep -vE '^[[:space:]]*(#|\$)' "\$EXCL" 2>/dev/null > "\$tmpe" || true
@@ -458,6 +532,7 @@ done < "\$tmpd" > "\$tmpc"
 mv "\$tmpc" "\$OUT"
 if /etc/init.d/dnsmasq restart 2>/dev/null && sleep 2 && pgrep -x dnsmasq >/dev/null; then
   log "geoblock обновлён: \$n доменов"
+  date +%s > "\$STAMP"
 else
   log "dnsmasq не поднялся — откат"; [ -f "\$OUT.bak" ] && mv "\$OUT.bak" "\$OUT" || rm -f "\$OUT"
   /etc/init.d/dnsmasq restart 2>/dev/null || true; exit 1

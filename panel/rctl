@@ -129,6 +129,21 @@ fi
 rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
 [ -n "$rip" ] && echo "  ✓ www.vtb.ru -> $rip (РФ-резолв жив)" || echo "  ✗ www.vtb.ru не резолвится — проверь split-ru/дефолт DNS"
 echo ""
+echo "=== запасной DNS через ноду ==="
+# Публичные резолверы известны наперечёт, и закрыть к ним 443 — работа на
+# полчаса. Запрос внутри туннеля так не закрыть, не закрыв туннель, поэтому
+# ядро держит свой резолвер, а dnsmasq знает о нём как о запасном апстриме.
+if netstat -lnp 2>/dev/null | grep -q "127.0.0.1:5056"; then
+  a=$(nslookup example.com 127.0.0.1:5056 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
+  [ -n "$a" ] && echo "  ✓ резолвер ядра на 5056 отвечает (example.com -> $a)" \
+              || echo "  ! порт 5056 слушает, но ответа нет — нода лежит?"
+  uci show dhcp 2>/dev/null | grep -q "127.0.0.1#5056" \
+    && echo "  ✓ dnsmasq знает о нём как о запасном" \
+    || echo "  ! dnsmasq о нём не знает: uci add_list dhcp.@dnsmasq[0].server=127.0.0.1#5056"
+else
+  echo "  ! не поднят — DNS держится только на публичных адресах резолверов"
+fi
+echo ""
 echo "=== IPv6 на LAN (утечка мимо ноды) ==="
 ra=$(uci -q get dhcp.lan.ra 2>/dev/null)
 [ "$ra" = "disabled" ] && echo "  ✓ отключён — утечки нет" || echo "  ! dhcp.lan.ra=\"${ra:-?}\" — v6 может течь мимо ноды"
