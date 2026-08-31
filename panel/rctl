@@ -117,6 +117,15 @@ echo "=== QUIC-блок ==="
 if [ "$(uci -q get firewall.block_quic 2>/dev/null)" = "rule" ] && [ "$(uci -q get firewall.block_quic.enabled 2>/dev/null)" != "0" ]; then echo "  ✓ включён (REJECT udp/443 lan->wan)"; else echo "  ! выключен"; fi
 echo ""
 echo "=== split-DNS (РФ-сайты, тест www.vtb.ru) ==="
+# Мало знать, что РФ-имя резолвится, — важно, каким путём. Открытый 53
+# перехватывает ТСПУ и отвечает вместо того, кого спросили, так что «резолв
+# жив» на открытом пути ещё не значит «ответ настоящий».
+if grep -q "^server=/.*/127\.0\.0\.1#" /etc/dnsmasq.d/split-ru.conf 2>/dev/null; then
+  echo "  путь: шифрованный DoH (свой https-dns-proxy)"
+  [ -f /tmp/rudns.fallback ] && echo "  ! сторож откатывал канал и ещё не вернул — смотри logread -t rudns-guard"
+else
+  echo "  ! путь: открытый 53 — такие ответы подменяет ТСПУ"
+fi
 rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
 [ -n "$rip" ] && echo "  ✓ www.vtb.ru -> $rip (РФ-резолв жив)" || echo "  ✗ www.vtb.ru не резолвится — проверь split-ru/дефолт DNS"
 echo ""

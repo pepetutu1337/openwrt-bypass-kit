@@ -51,11 +51,12 @@ if [ "$MODE" = uninstall ]; then
            /usr/sbin/zapret-sweep /usr/sbin/svcprobe /etc/svcprobe.conf \
            /usr/sbin/ytwatch /usr/sbin/dnsforce /etc/nftables.d/22-dns-force.nft \
            /usr/sbin/proxy-watchdog /usr/sbin/zapret-guard /usr/sbin/subsync \
+           /usr/sbin/rudns-guard \
            /usr/sbin/rescue /etc/rescue.conf \
            /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
     # Строки крона надо убирать все: иначе крон каждые три минуты зовёт файл,
     # которого больше нет, и сыплет ошибками в системный журнал.
-    crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|subsync|/usr/sbin/rescue" | crontab -
+    crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|rudns-guard|subsync|/usr/sbin/rescue" | crontab -
     sed -i "/usr\/sbin\/rescue/d" /etc/crontabs/root 2>/dev/null
     /etc/init.d/cron restart >/dev/null 2>&1
     echo "✓ панель, rctl, бот и крон убраны (uhttpd на 80/443 не тронут)"
@@ -78,7 +79,7 @@ $SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/
 # рабочем роутере их подкладывали руками, а у того, кто ставит кит с нуля,
 # половина автоматики просто отсутствовала — и он об этом не узнавал.
 say "заливаю свип стратегий, пробер сервисов, дневник ютуба, сторожей и перехват DNS"
-for f in zapret-sweep svcprobe ytwatch dnsforce proxy-watchdog zapret-guard subsync rescue; do
+for f in zapret-sweep svcprobe ytwatch dnsforce proxy-watchdog zapret-guard rudns-guard subsync rescue; do
   $SSH "cat > /usr/sbin/$f.new" < "$DIR/router/$f"
   $SSH "sh -n /usr/sbin/$f.new && mv /usr/sbin/$f.new /usr/sbin/$f && chmod +x /usr/sbin/$f" \
     || { echo "✗ $f не прошёл проверку синтаксиса"; exit 1; }
@@ -133,7 +134,7 @@ if [ "$CRON" = 1 ]; then
   # со svcprobe, который выбирает ноду по доказанной работе сервисов.
   say "включаю авто-проверку сервисов"
   $SSH '
-    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|subsync"
+    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|rudns-guard|subsync"
       echo "*/5 * * * * SVCPROBE_SKIP_SPEED=1 /usr/sbin/svcprobe auto >/dev/null 2>&1"
       echo "7 * * * * /usr/sbin/svcprobe score >/dev/null 2>&1"
       echo "*/10 * * * * /usr/sbin/ytwatch sample light >/dev/null 2>&1"
@@ -141,6 +142,7 @@ if [ "$CRON" = 1 ]; then
       echo "17 */1 * * * /usr/sbin/ytwatch heal >/dev/null 2>&1"
       echo "*/3 * * * * /usr/sbin/proxy-watchdog >/dev/null 2>&1"
       echo "*/4 * * * * /usr/sbin/zapret-guard >/dev/null 2>&1"
+      echo "*/5 * * * * /usr/sbin/rudns-guard >/dev/null 2>&1"
       echo "41 5 * * * /usr/sbin/subsync >/dev/null 2>&1" ) | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
     echo "✓ крон: svcprobe, дневник ютуба, сторож нод, страж обхода, подписка"

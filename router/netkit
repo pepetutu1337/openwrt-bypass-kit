@@ -21,6 +21,7 @@ CFG=/etc/netkit
 : "${DOH_UPSTREAM2:=https://8.8.8.8/dns-query}"; : "${DOH_PORT2:=5054}"
 # split-DNS: РФ-зоны через российский резолвер (чинит VTB и пр., что прячут DNS от иностранцев)
 : "${SPLIT_RU_ENABLE:=1}"; : "${RU_DNS:=77.88.8.8}"; : "${RU_DNS2:=77.88.8.1}"
+: "${RU_DOH_ENABLE:=1}"; : "${RU_DOH_PORT:=5055}"; : "${RU_DOH_UPSTREAM:=https://77.88.8.8/dns-query}"
 # авто-список ушедших из РФ сервисов
 : "${GEOBLOCK_ENABLE:=1}"; : "${GEOBLOCK_CRON:=15 4 * * *}"
 : "${GEOBLOCK_URL:=https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Categories/geoblock.lst}"
@@ -73,7 +74,11 @@ ensure_deps() {
   if dnsmasq --help 2>&1 | grep -q -- '--nftset'; then ok "dnsmasq-full (nftset) — есть"
   else
     warn "dnsmasq без nftset — меняю на dnsmasq-full (иначе наборы не заведутся)"
-    echo 'nameserver 1.1.1.1' > /etc/resolv.conf   # чтобы DNS не умер на время подмены
+    # DNS на время подмены пакета. Провайдерский резолвер оставляем первым:
+    # открытый 53 наружу теперь перехватывает ТСПУ, а репозиторий OpenWrt
+    # никто не блокирует — свой резолвер отдаст его вернее чужого.
+    { cat /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | grep '^nameserver'
+      echo 'nameserver 1.1.1.1'; } > /etc/resolv.conf
     if [ "$PKG" = apk ]; then apk del dnsmasq 2>/dev/null || true; apk add --no-cache dnsmasq-full >/dev/null 2>&1
     else opkg remove dnsmasq 2>/dev/null || true; opkg install dnsmasq-full >/dev/null 2>&1; fi
     ln -sf /tmp/resolv.conf.d/resolv.conf.auto /etc/resolv.conf 2>/dev/null || ln -sf /tmp/resolv.conf /etc/resolv.conf 2>/dev/null || true
@@ -180,11 +185,16 @@ gen_nft() {
 }
 
 # ---------- https-dns-proxy: 1-2 чистых зарубежных DoH-резолвера ----------
-_doh_instance() {  # $1=port $2=url
+_doh_instance() {  # $1=port $2=url [$3=bootstrap]
   s=$(uci add https-dns-proxy https-dns-proxy)
   uci set https-dns-proxy.$s.listen_addr='127.0.0.1'
   uci set https-dns-proxy.$s.listen_port="$1"
-  uci set https-dns-proxy.$s.bootstrap_dns='1.1.1.1,8.8.8.8'
+  # Бутстрап нужен только чтобы разрезолвить имя самого DoH-сервера. У нас все
+  # URL в IP-форме, так что он не используется, но https-dns-proxy требует
+  # непустое значение. Российскому инстансу даём российский бутстрап: если
+  # зарубежный 53 однажды заглушат целиком, он не должен утянуть за собой
+  # резолв банков.
+  uci set https-dns-proxy.$s.bootstrap_dns="${3:-1.1.1.1,8.8.8.8}"
   uci set https-dns-proxy.$s.resolver_url="$2"
   uci set https-dns-proxy.$s.user='nobody'; uci set https-dns-proxy.$s.group='nogroup'
 }
@@ -196,6 +206,11 @@ gen_doh() {
   if [ -n "$DOH_UPSTREAM2" ] && [ -n "$DOH_PORT2" ]; then
     _doh_instance "$DOH_PORT2" "$DOH_UPSTREAM2"
     msg="$msg + 127.0.0.1:$DOH_PORT2 ($DOH_UPSTREAM2)"
+  fi
+  # Российский DoH — отдельным инстансом, на него смотрит split-DNS.
+  if [ "$SPLIT_RU_ENABLE" = 1 ] && [ "$RU_DOH_ENABLE" = 1 ] && [ -n "$RU_DOH_UPSTREAM" ]; then
+    _doh_instance "$RU_DOH_PORT" "$RU_DOH_UPSTREAM" "$RU_DNS,${RU_DNS2:-$RU_DNS}"
+    msg="$msg + 127.0.0.1:$RU_DOH_PORT ($RU_DOH_UPSTREAM, РФ-зоны)"
   fi
   uci -q set https-dns-proxy.config.update_dnsmasq_config='-'  # не перехватывать весь DNS сами
   uci -q set https-dns-proxy.config.force_dns='0'
@@ -224,11 +239,49 @@ gen_splitdns() {
     echo "# генерируется netkit — РФ-зоны/сервисы через российский DNS,"
     echo "# т.к. зарубежный DoH их не видит (VTB и пр. прячут DNS от иностранцев)."
     lines "$CFG/ru-split.list" | while IFS= read -r z; do
-      echo "server=/$z/$RU_DNS"
-      [ -n "$RU_DNS2" ] && echo "server=/$z/$RU_DNS2"
+      if [ "$RU_DOH_ENABLE" = 1 ]; then
+        echo "server=/$z/127.0.0.1#$RU_DOH_PORT"
+      else
+        echo "server=/$z/$RU_DNS"
+        [ -n "$RU_DNS2" ] && echo "server=/$z/$RU_DNS2"
+      fi
     done
   } > "$SPLITD"
-  ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → $RU_DNS"
+  if [ "$RU_DOH_ENABLE" = 1 ]; then
+    ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → DoH 127.0.0.1:$RU_DOH_PORT"
+  else
+    ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → $RU_DNS (открытый 53)"
+  fi
+}
+
+# Адрес РФ-имени так, как его увидит любой домашний клиент: спрашиваем dnsmasq,
+# а не резолвер напрямую. Спрашивать напрямую бессмысленно — проверять надо ту
+# дорогу, по которой пойдёт трафик.
+ru_ip() {
+  nslookup "${1:-www.vtb.ru}" 127.0.0.1 2>/dev/null |
+    awk '/^Address/{print $NF}' | grep -v '#' | grep '\.' | tail -1
+}
+
+# После переключения РФ-зон на DoH проверяем, что они вообще резолвятся, и
+# откатываемся на открытый 53, если нет. Рабочий DNS важнее шифрованного:
+# без него банки просто не открываются, а это худшая из двух бед.
+verify_ru_doh() {
+  [ "$SPLIT_RU_ENABLE" = 1 ] && [ "$RU_DOH_ENABLE" = 1 ] || return 0
+  i=0
+  while [ "$i" -lt 5 ]; do
+    rip=$(ru_ip)
+    [ -n "$rip" ] && { ok "РФ-резолв через DoH работает (www.vtb.ru → $rip)"; return 0; }
+    i=$((i + 1)); sleep 2
+  done
+  warn "РФ-имена не резолвятся через DoH — возвращаю открытый 53"
+  RU_DOH_ENABLE=0
+  gen_splitdns
+  /etc/init.d/dnsmasq restart 2>/dev/null || true
+  sleep 2
+  rip=$(ru_ip)
+  [ -n "$rip" ] && warn "откатился на открытый 53, РФ-резолв жив (www.vtb.ru → $rip)" \
+                || err "РФ-имена не резолвятся ни через DoH, ни напрямую — смотри logread -e dnsmasq"
+  return 0
 }
 
 # ---------- метка «это роутер кита» ----------
@@ -270,6 +323,7 @@ gen_dns() {
   uci commit dhcp
   /etc/init.d/dnsmasq restart
   ok "dnsmasq: $(lines "$CFG/domains.list" | wc -l) проксируемых доменов в наборы"
+  verify_ru_doh
 }
 
 # ---------- IPv6 на LAN: гасим, чтобы не текло мимо IPv4-ноды ----------
@@ -787,9 +841,14 @@ cmd_doctor() {
   else warn "QUIC-блок выключен в kit.conf"; fi
   echo
   if [ "$SPLIT_RU_ENABLE" = 1 ]; then
-    say "split-DNS: РФ-сайт должен резолвиться (через $RU_DNS)"
-    rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk '/^Address/{print $NF}' | grep -v '#' | grep '\.' | tail -1)
-    [ -n "$rip" ] && ok "www.vtb.ru → $rip (РФ-резолв работает)" || err "www.vtb.ru не резолвится — проверь split-ru.list / $RU_DNS"
+    if [ "$RU_DOH_ENABLE" = 1 ] && grep -q "127.0.0.1#$RU_DOH_PORT" "$SPLITD" 2>/dev/null; then
+      way="DoH 127.0.0.1:$RU_DOH_PORT → $RU_DOH_UPSTREAM"
+    else
+      way="$RU_DNS, открытый 53 — ТСПУ такой перехватывает"
+    fi
+    say "split-DNS: РФ-сайт должен резолвиться ($way)"
+    rip=$(ru_ip)
+    [ -n "$rip" ] && ok "www.vtb.ru → $rip (РФ-резолв работает)" || err "www.vtb.ru не резолвится — проверь split-ru.list / $way"
   fi
   echo
   say "IPv6-утечка (заблок. сайты мимо ноды через v6)"
@@ -797,7 +856,7 @@ cmd_doctor() {
     ra=$(uci -q get dhcp.lan.ra); [ "$ra" = disabled ] && ok "IPv6 на LAN отключён — утечки нет" || warn "LAN_IPV6=disabled, но dhcp.lan.ra='$ra' — примени: netctl apply"
   else warn "LAN_IPV6=keep — v6 включён, возможны утечки заблок. сайтов мимо ноды"; fi
   echo
-  say "geoblock-список: $(grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0) доменов, крон/сторож:"
+  say "geoblock-список: $({ grep -c 'proxy4' "$GEOBLOCKD" 2>/dev/null || echo 0; } | head -1) доменов, крон/сторож:"
   grep -q geoblock-update /etc/crontabs/root 2>/dev/null && ok "geoblock-update в кроне" || warn "geoblock-update не в кроне"
   { [ "$PROXY_ENABLE" != 1 ] || grep -q proxy-watchdog /etc/crontabs/root 2>/dev/null; } && ok "сторож нод в кроне" || warn "proxy-watchdog не в кроне"
   echo
