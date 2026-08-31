@@ -28,26 +28,54 @@ say() { logger -t proxy-watchdog "$1"; }
 
 # Кому доложить. Сторож молчит, пока всё хорошо, и пишет один раз по факту
 # починки: иначе о поломке узнаёшь, только когда сам полез проверять.
-tell() {
-  [ -f /etc/rctl-bot.conf ] || return 0
-  # shellcheck disable=SC1091
-  . /etc/rctl-bot.conf 2>/dev/null || return 0
-  [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
-  sent=1
+# Недоставленное не выбрасываем. Сообщение шлётся ровно тогда, когда через
+# ноду ничего не ходит, а напрямую до телеграма с роутера не достучаться
+# вообще (проверено). Значит единственный честный путь — отложить и отдать,
+# когда прокси вернётся: лучше узнать в 9 утра, что ночью полчаса ничего не
+# работало, чем не узнать никогда.
+QUEUE=/tmp/notify.queue
+
+send_one() { # send_one ТЕКСТ -> 0, если доставлено хоть кому-то
+  s=1
   for chat in $BOT_ALLOW; do
-    # Сначала через ноду, потом напрямую. Сообщение шлётся как раз тогда,
-    # когда через ноду ничего не ходит, — канал доставки не должен совпадать
-    # с тем, что сломалось.
     for way in "--socks5-hostname ${BOT_PROXY:-$SOCKS}" ""; do
       # shellcheck disable=SC2086
       c=$(curl -s -o /dev/null -m 15 -w '%{http_code}' $way \
         "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         --data-urlencode "chat_id=$chat" \
         --data-urlencode "text=$1" 2>/dev/null)
-      [ "$c" = 200 ] && { sent=0; break; }
+      [ "$c" = 200 ] && { s=0; break; }
     done
   done
-  return $sent
+  return $s
+}
+
+flush_queue() {
+  [ -s "$QUEUE" ] || return 0
+  [ -f /etc/rctl-bot.conf ] || return 0
+  # shellcheck disable=SC1091
+  . /etc/rctl-bot.conf 2>/dev/null || return 0
+  [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
+  left=/tmp/notify.queue.left; : > "$left"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    send_one "$line" || printf '%s\n' "$line" >> "$left"
+  done < "$QUEUE"
+  mv "$left" "$QUEUE"
+  [ -s "$QUEUE" ] || rm -f "$QUEUE"
+}
+
+tell() {
+  [ -f /etc/rctl-bot.conf ] || return 0
+  # shellcheck disable=SC1091
+  . /etc/rctl-bot.conf 2>/dev/null || return 0
+  [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
+  if send_one "$1"; then
+    return 0
+  fi
+  # не дошло — в очередь, с отметкой времени, чтобы потом было понятно, о чём речь
+  printf '%s %s\n' "$(date '+%d.%m %H:%M') —" "$1" >> "$QUEUE"
+  return 1
 }
 
 # Один заход по настоящей дороге: код ответа через SOCKS ноды.
@@ -71,9 +99,10 @@ active_node() {
   echo "$sel"
 }
 
-passes && exit 0
+# Здоровый заход — самое время отдать то, что не ушло в прошлый раз.
+if passes; then flush_queue; exit 0; fi
 sleep 4
-passes && exit 0
+if passes; then flush_queue; exit 0; fi
 
 was=$(active_node)
 say "через ноду ($was) не проходит ни одна мишень — пересаживаюсь"

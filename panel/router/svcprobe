@@ -241,7 +241,21 @@ streak() { [ -f "$STREAK_DIR/$1" ] && wc -c < "$STREAK_DIR/$1" | tr -d ' ' || ec
 # ---- матрица нода × сервис --------------------------------------------------
 # Ходим через clash API: он умеет мерить задержку конкретной ноды до
 # конкретного URL, не трогая селектор и не роняя текущие соединения.
+SCORE_LOCK=/tmp/svcprobe.score.lock
+
 cmd_score() {
+  # Замок. Раньше матрица считалась мгновенно — потому что все запросы били
+  # мимо и возвращали «нет такой ноды». Теперь это настоящие замеры: три
+  # десятка нод на пять сервисов идут минутами, а крон зовёт счёт каждый час.
+  # Без замка прогоны наслаиваются и толкают друг друга.
+  if [ -f "$SCORE_LOCK" ]; then
+    pid=$(cat "$SCORE_LOCK" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "матрица уже считается (pid $pid)"; return 0
+    fi
+  fi
+  echo $$ > "$SCORE_LOCK"
+  trap 'rm -f "$SCORE_LOCK"' EXIT INT TERM
   : > "$SCORE"
   nodes=$(all_nodes)
   [ -n "$nodes" ] || { echo "clash API $API молчит"; return 1; }
@@ -256,7 +270,7 @@ cmd_score() {
     [ "$kind" = proxy ] || continue
     while IFS= read -r n; do
       [ -n "$n" ] || continue
-      ms=$(curl -s -m 12 "http://$API/proxies/$(urlenc "$n")/delay?url=$url&timeout=6000" |
+      ms=$(curl -s -m 9 "http://$API/proxies/$(urlenc "$n")/delay?url=$url&timeout=5000" |
              sed -n 's/.*"delay": *\([0-9][0-9]*\).*/\1/p')
       # Поля разделяем табуляцией: в имени ноды бывают пробелы, и разбор по
       # пробелам уводил бы столбцы.
@@ -264,6 +278,7 @@ cmd_score() {
     done < "$nf"
   done
   echo "done" >> "$SCORE.total"
+  rm -f "$SCORE_LOCK"
   cmd_scorelog
 }
 
@@ -349,8 +364,8 @@ tell() {
   [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
   sent=1
   for chat in $BOT_ALLOW; do
-    # Через ноду, а не вышло — напрямую. Сообщение шлётся именно тогда, когда
-    # через ноду ничего не ходит: доставлять его той же дорогой бессмысленно.
+    # Через ноду, а не вышло — напрямую. Прямой путь с этого роутера до
+    # телеграма закрыт (проверено), но у другого провайдера может и пройти.
     for way in "--socks5-hostname ${BOT_PROXY:-127.0.0.1:$SOCKS_PORT}" ""; do
       # shellcheck disable=SC2086
       c=$(curl -s -o /dev/null -m 15 -w '%{http_code}' $way \
@@ -359,9 +374,15 @@ tell() {
       [ "$c" = 200 ] && { sent=0; break; }
     done
   done
-  # штамп — только по факту доставки, иначе непрошедшее сообщение запирает
-  # канал на час и хозяин так ничего и не узнаёт
-  [ "$sent" = 0 ] && echo "$now" > "$TELL_STAMP"
+  if [ "$sent" = 0 ]; then
+    # штамп — только по факту доставки, иначе непрошедшее сообщение запирает
+    # канал на час и хозяин так ничего и не узнаёт
+    echo "$now" > "$TELL_STAMP"
+  else
+    # Сообщать не через что: ровно тот случай, ради которого сообщение и
+    # писалось. Откладываем — сторож нод отдаст очередь, когда прокси вернётся.
+    printf '%s — %s\n' "$(date '+%d.%m %H:%M')" "$1" >> /tmp/notify.queue
+  fi
   return $sent
 }
 
