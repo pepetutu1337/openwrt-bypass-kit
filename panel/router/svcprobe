@@ -23,6 +23,9 @@ OUT=/tmp/svcprobe.out
 SCORE=/tmp/svcprobe.score
 LOG=/tmp/svcprobe.log
 STREAK_DIR=/tmp/svcprobe.streak
+# Куда сливать тело ответа. Не /dev/null: см. пояснение у самой проверки.
+BODY=/tmp/svcprobe.body
+RUN_LOCK=/tmp/svcprobe.run.lock
 API=${CLASH_API:-127.0.0.1:9090}
 # локальный mixed-инбаунд sing-box: через него проверяем проксируемые сервисы
 SOCKS_PORT=${SINGBOX_SOCKS_PORT:-1180}
@@ -157,8 +160,20 @@ probe_one() {
   # у клиента в доме. Прямые сервисы, наоборот, идут обычным curl.
   [ "$kind" = proxy ] && via="-x socks5h://127.0.0.1:$SOCKS_PORT" || via=""
 
-  r=$(curl -sS $via -o /dev/null -m "$tmo" -w '%{http_code} %{time_total} %{speed_download}' "$url" 2>/dev/null) ||
-    r="000 $tmo 0"
+  # Тело качаем в /tmp, а не в /dev/null. Причина не в аккуратности: на этом
+  # роутере /dev/null оказался обычным файлом на 512-килобайтной tmpfs — узел
+  # устройства кто-то снёс, а первый же `curl -o /dev/null` создал на его месте
+  # файл. Страница плеера в мегабайт упиралась в ENOSPC, curl выходил с кодом
+  # 23, и проверка объявляла «прямой запрос не проходит — дело в стратегии
+  # zapret», хотя ютуб открывался. /tmp — 116 МБ, туда влезает.
+  #
+  # И код возврата curl больше не затирает результат. При любой сетевой беде
+  # curl сам печатает "000" в %{http_code}: пустым вывод бывает, только если
+  # curl вовсе не запустился. А вот ненулевой выход при живом ответе бывает
+  # запросто — и раньше он превращал честные 200 в "нет связи".
+  r=$(curl -sS $via -o "$BODY" -m "$tmo" -w '%{http_code} %{time_total} %{speed_download}' "$url" 2>/dev/null) || true
+  rm -f "$BODY"
+  [ -n "$r" ] || r="000 $tmo 0"
   set -- $r
   code=$1; t=$2; sp=$3
   ms=$(awk -v x="$t" 'BEGIN{printf "%d", x*1000}')
@@ -202,7 +217,22 @@ probe_one() {
 # ---- прогон -----------------------------------------------------------------
 # Пишем результат строка за строкой прямо в $OUT, а не во временный файл:
 # панель читает этот же файл во время прогона и показывает живой прогресс.
+# Замок на прогон. Крон зовёт `auto` каждые пять минут, панель и бот — `run`
+# руками, и оба пишут в один $OUT, подчищая его последнюю строку через sed.
+# Наложение видно сразу: в отчёте сервисы задваиваются, а счётчики серий
+# считают один и тот же сбой дважды. Ловилось живьём.
+take_run_lock() {
+  if [ -f "$RUN_LOCK" ]; then
+    pid=$(cat "$RUN_LOCK" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 1
+  fi
+  echo $$ > "$RUN_LOCK"
+  trap 'rm -f "$RUN_LOCK"' EXIT INT TERM
+  return 0
+}
+
 cmd_run() {
+  take_run_lock || { echo "проверка уже идёт (pid $(cat "$RUN_LOCK" 2>/dev/null))"; return 0; }
   : > "$OUT"
   echo ":: проверка сервисов $(date '+%H:%M:%S')" >> "$OUT"
   node=$(active_node)
@@ -387,6 +417,7 @@ tell() {
 }
 
 cmd_auto() {
+  take_run_lock || return 0
   # Сначала поднимаем упавшие службы: проверять сервисы при мёртвом sing-box
   # бессмысленно, а переключать ноду — тем более.
   for p in "sing-box:sing-box" "zapret:nfqws" "dnsmasq:dnsmasq" "https-dns-proxy:https-dns-proxy"; do

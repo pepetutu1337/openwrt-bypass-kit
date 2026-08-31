@@ -49,8 +49,10 @@ cdn_live() {
   live=0; total=0
   for h in $CDN_HOSTS; do
     total=$((total + 1))
+    # см. пояснение в zapret-tune: код возврата curl тут не показатель
     c=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code}' \
-          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || c=000
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || true
+    [ -n "$c" ] || c=000
     case "$c" in 200|204) live=$((live + 1)) ;; esac
   done
   echo "$live $total"
@@ -62,7 +64,8 @@ cdn_live() {
 speed() {
   set -- $(cdn_live)
   live=$1; total=$2
-  r=$(curl -sS -m 40 -o /tmp/sweep.page -w '%{http_code} %{speed_download}' "$VIDEO" 2>/dev/null) || r="000 0"
+  r=$(curl -sS -m 40 -o /tmp/sweep.page -w '%{http_code} %{speed_download}' "$VIDEO" 2>/dev/null) || true
+  [ -n "$r" ] || r="000 0"
   set -- $r
   code=$1
   [ "$code" = 200 ] && kb=$(( ${2%%.*} / 1024 )) || kb=0

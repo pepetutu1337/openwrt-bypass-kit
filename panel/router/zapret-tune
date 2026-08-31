@@ -196,12 +196,22 @@ probe() {
   live=0; total=0
   for h in $CDN_HOSTS; do
     total=$((total + 1))
+    # curl сам печатает 000, когда не дозвонился; пустым вывод бывает, только
+    # если curl не запустился. Полагаться на его код возврата нельзя — ошибка
+    # записи тела давала ненулевой выход при живом ответе.
     c=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code}' \
-          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || c=000
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || true
+    [ -n "$c" ] || c=000
     case "$c" in 200|204) live=$((live + 1)) ;; esac
   done
-  r=$(curl -sS -m 25 -o /dev/null -w "%{speed_download} %{http_code}" \
-        "https://www.youtube.com/watch?v=aqz-KE-bpKQ" 2>/dev/null) || r="0 000"
+  # Тело — в /tmp, не в /dev/null: на этом роутере /dev/null оказался обычным
+  # файлом на tmpfs в 512 КБ, мегабайтная страница упиралась в ENOSPC, и curl
+  # выходил с ошибкой записи. Замер скорости при этом врал, а решение
+  # «стало лучше или хуже» принималось по нему.
+  r=$(curl -sS -m 25 -o /tmp/tune.page -w "%{speed_download} %{http_code}" \
+        "https://www.youtube.com/watch?v=aqz-KE-bpKQ" 2>/dev/null) || true
+  rm -f /tmp/tune.page
+  [ -n "$r" ] || r="0 000"
   set -- $r
   kb=$(( ${1%%.*} / 1024 ))
   echo "$((live * 1000 + kb)) — $live/$total узлов CDN, $kb КБ/с (код $2)"

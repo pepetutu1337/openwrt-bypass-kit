@@ -20,6 +20,8 @@ set -u
 
 LOG=/tmp/ytwatch.log
 URLF=/tmp/ytwatch.url
+# Куда сливать тело при замерах. Не /dev/null: см. пояснение у замера страницы.
+BODY=/tmp/ytwatch.body
 PAGE=${YTWATCH_PAGE:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}
 # ниже этого считаем, что поток душат (КБ/с)
 SLOW_KB=${YTWATCH_SLOW_KB:-150}
@@ -60,7 +62,8 @@ cdn_probe() {
   for h in $(cdn_hosts); do
     total=$((total + 1))
     r=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code} %{time_total}' \
-          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || r="000 6"
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || true
+    [ -n "$r" ] || r="000 6"
     set -- $r
     case "$1" in
       200|204)
@@ -92,7 +95,16 @@ cmd_sample() {
   fi
 
   # 2. страница плеера: идёт тем же путём, что и видео
-  r=$(curl -sS -o /dev/null -m 40 -w '%{http_code} %{speed_download}' "$PAGE" 2>/dev/null) || r="000 0"
+  #
+  # Тело сливаем в /tmp, а не в /dev/null. На этом роутере /dev/null оказался
+  # обычным файлом на tmpfs в 512 КБ: узел устройства кто-то снёс, а первый же
+  # `curl -o /dev/null` создал на его месте файл. Всё, что больше полумегабайта,
+  # упиралось в ENOSPC — а тут ниже качается кусок в 6 МБ. Замеры скорости
+  # выходили обрезанными, ytwatch считал видео мёртвым и гонял лечение впустую.
+  # /tmp — 116 МБ, и файл убирается сразу после замера.
+  r=$(curl -sS -o "$BODY" -m 40 -w '%{http_code} %{speed_download}' "$PAGE" 2>/dev/null) || true
+  rm -f "$BODY"
+  [ -n "$r" ] || r="000 0"
   set -- $r
   page_code=$1; page_kb=$(kbps "$2")
 
@@ -103,7 +115,9 @@ cmd_sample() {
     u=$(cat "$URLF")
     exp=$(printf '%s' "$u" | sed -n 's/.*[?&]expire=\([0-9]*\).*/\1/p')
     if [ -n "$exp" ] && [ "$exp" -gt "$ts" ] 2>/dev/null; then
-      r=$(curl -L -sS -o /dev/null -m 45 -w '%{http_code} %{speed_download}' "$u&range=0-6291455" 2>/dev/null) || r="000 0"
+      r=$(curl -L -sS -o "$BODY" -m 45 -w '%{http_code} %{speed_download}' "$u&range=0-6291455" 2>/dev/null) || true
+      rm -f "$BODY"
+      [ -n "$r" ] || r="000 0"
       set -- $r
       vid_code=$1; vid_kb=$(kbps "$2")
     fi
