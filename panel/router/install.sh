@@ -50,8 +50,13 @@ if [ "$MODE" = uninstall ]; then
     rm -rf /www/panel /etc/uhttpd-panel.auth /usr/sbin/rctl /usr/sbin/zapret-tune \
            /usr/sbin/zapret-sweep /usr/sbin/svcprobe /etc/svcprobe.conf \
            /usr/sbin/ytwatch /usr/sbin/dnsforce /etc/nftables.d/22-dns-force.nft \
+           /usr/sbin/proxy-watchdog /usr/sbin/zapret-guard /usr/sbin/subsync \
+           /usr/sbin/rescue /etc/rescue.conf \
            /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
-    crontab -l 2>/dev/null | grep -v "rctl fix" | crontab -
+    # Строки крона надо убирать все: иначе крон каждые три минуты зовёт файл,
+    # которого больше нет, и сыплет ошибками в системный журнал.
+    crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|subsync|/usr/sbin/rescue" | crontab -
+    sed -i "/usr\/sbin\/rescue/d" /etc/crontabs/root 2>/dev/null
     /etc/init.d/cron restart >/dev/null 2>&1
     echo "✓ панель, rctl, бот и крон убраны (uhttpd на 80/443 не тронут)"
   '
@@ -68,8 +73,12 @@ $SSH 'cat > /usr/sbin/zapret-tune.new' < "$DIR/router/zapret-tune"
 $SSH 'sh -n /usr/sbin/zapret-tune.new && mv /usr/sbin/zapret-tune.new /usr/sbin/zapret-tune && chmod +x /usr/sbin/zapret-tune' \
   || { echo "✗ zapret-tune не прошёл проверку синтаксиса"; exit 1; }
 
-say "заливаю свип стратегий, пробер сервисов, дневник ютуба и перехват DNS"
-for f in zapret-sweep svcprobe ytwatch dnsforce; do
+# Раньше этот список был короче файлов в папке: proxy-watchdog, zapret-guard,
+# subsync и rescue лежали в репозитории, но на роутер не попадали никогда. На
+# рабочем роутере их подкладывали руками, а у того, кто ставит кит с нуля,
+# половина автоматики просто отсутствовала — и он об этом не узнавал.
+say "заливаю свип стратегий, пробер сервисов, дневник ютуба, сторожей и перехват DNS"
+for f in zapret-sweep svcprobe ytwatch dnsforce proxy-watchdog zapret-guard subsync rescue; do
   $SSH "cat > /usr/sbin/$f.new" < "$DIR/router/$f"
   $SSH "sh -n /usr/sbin/$f.new && mv /usr/sbin/$f.new /usr/sbin/$f && chmod +x /usr/sbin/$f" \
     || { echo "✗ $f не прошёл проверку синтаксиса"; exit 1; }
@@ -124,14 +133,17 @@ if [ "$CRON" = 1 ]; then
   # со svcprobe, который выбирает ноду по доказанной работе сервисов.
   say "включаю авто-проверку сервисов"
   $SSH '
-    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch"
+    ( crontab -l 2>/dev/null | grep -vE "rctl fix|svcprobe|ytwatch|proxy-watchdog|zapret-guard|subsync"
       echo "*/5 * * * * SVCPROBE_SKIP_SPEED=1 /usr/sbin/svcprobe auto >/dev/null 2>&1"
       echo "7 * * * * /usr/sbin/svcprobe score >/dev/null 2>&1"
       echo "*/10 * * * * /usr/sbin/ytwatch sample light >/dev/null 2>&1"
       echo "23 */2 * * * /usr/sbin/ytwatch sample >/dev/null 2>&1"
-      echo "17 */1 * * * /usr/sbin/ytwatch heal >/dev/null 2>&1" ) | crontab -
+      echo "17 */1 * * * /usr/sbin/ytwatch heal >/dev/null 2>&1"
+      echo "*/3 * * * * /usr/sbin/proxy-watchdog >/dev/null 2>&1"
+      echo "*/4 * * * * /usr/sbin/zapret-guard >/dev/null 2>&1"
+      echo "41 5 * * * /usr/sbin/subsync >/dev/null 2>&1" ) | crontab -
     /etc/init.d/cron restart >/dev/null 2>&1
-    echo "✓ крон: */5 svcprobe auto, матрица нод, дневник ютуба + самолечение"
+    echo "✓ крон: svcprobe, дневник ютуба, сторож нод, страж обхода, подписка"
   '
 fi
 
@@ -149,12 +161,6 @@ if [ -n "$BOT_TOKEN" ]; then
         pgrep -f rctl-bot >/dev/null && echo "✓ бот запущен" || echo "✗ бот не поднялся, смотри logread -e rctl-bot"'
 else
   # токен не передали: если он уже прописан — просто перезапускаем с новым кодом
-  # Аварийный канал ставим всегда, но спящим: без /etc/rescue.conf он молча
-  # выходит. Заполнить его — отдельное осознанное действие хозяина.
-  scp -q $SSHOPT "$HERE/rescue" "$TARGET:/usr/sbin/rescue" 2>/dev/null || true
-  $SSH 'chmod +x /usr/sbin/rescue 2>/dev/null
-        [ -f /etc/rescue.conf ] || { printf "# Аварийный канал. Пока пусто — канал спит.\n# RESCUE_URL=https://pastebin.com/raw/XXXXXXXX\n# RESCUE_SECRET=придумай-слово\n" > /etc/rescue.conf; chmod 600 /etc/rescue.conf; }
-        grep -q /usr/sbin/rescue /etc/crontabs/root 2>/dev/null || echo "*/15 * * * * /usr/sbin/rescue" >> /etc/crontabs/root'
   $SSH '[ -f /etc/rctl-bot.conf ] || { printf "BOT_TOKEN=\nBOT_ALLOW=\"\"\nBOT_PROXY=127.0.0.1:1180\n" > /etc/rctl-bot.conf; chmod 600 /etc/rctl-bot.conf; }
         . /etc/rctl-bot.conf
         if [ -n "${BOT_TOKEN:-}" ]; then
@@ -165,6 +171,15 @@ else
           echo "· бот залит, но без токена не стартует. Вписать: /etc/rctl-bot.conf, затем /etc/init.d/rctl-bot enable; /etc/init.d/rctl-bot start"
         fi'
 fi
+
+# Аварийный канал ставим всегда, но спящим: без /etc/rescue.conf он молча
+# выходит. Заполнить его — отдельное осознанное действие хозяина. Раньше этот
+# кусок жил в ветке «токен не передали», то есть при установке с ботом канал не
+# заводился вовсе. Сам файл заливается выше, вместе с остальными скриптами:
+# прежний scp тут не работал в принципе — у dropbear нет sftp.
+say "аварийный канал (спящий, пока не заполнен /etc/rescue.conf)"
+$SSH '[ -f /etc/rescue.conf ] || { printf "# Аварийный канал. Пока пусто — канал спит.\n# RESCUE_URL=https://pastebin.com/raw/XXXXXXXX\n# RESCUE_SECRET=придумай-слово\n" > /etc/rescue.conf; chmod 600 /etc/rescue.conf; }
+      grep -q /usr/sbin/rescue /etc/crontabs/root 2>/dev/null || { echo "*/15 * * * * /usr/sbin/rescue" >> /etc/crontabs/root; /etc/init.d/cron restart >/dev/null 2>&1; }'
 
 say "проверяю, что панель отвечает"
 # панель слушает только LAN-адрес, поэтому и стучимся по нему, а не в 127.0.0.1

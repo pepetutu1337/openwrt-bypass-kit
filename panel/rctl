@@ -855,7 +855,20 @@ else
     rm -f "$tmpb"
     if [ -n "$best" ]; then
       r=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$b/proxies/proxy" -d "{\"name\":\"$best\"}")
-      [ "$r" = "204" ] && { echo "    ✓ переключил на $best (${bestms} мс)"; changed=1; } || echo "    ✗ переключить не вышло (код $r)"
+      if [ "$r" = "204" ]; then
+        echo "    ✓ переключил на $best (${bestms} мс)"; changed=1
+        # Пинг у clash — это его собственная проба, а не дорога пользователя.
+        # Нода отвечает на неё и при этом не пропускает ничего: так селектор
+        # однажды и сел на мёртвую. Проверяем тем же socks, которым идёт трафик.
+        sleep 2
+        c=$(curl -s -o /dev/null -m 12 -w "%{http_code}" --socks5-hostname 127.0.0.1:1180 https://www.gstatic.com/generate_204 2>/dev/null)
+        case "$c" in
+          2??|3??) echo "    ✓ через неё трафик идёт" ;;
+          *) echo "    ✗ пинг есть, а трафик через неё не идёт (код ${c:-000}) — попробуй другую ноду вручную" ;;
+        esac
+      else
+        echo "    ✗ переключить не вышло (код $r)"
+      fi
     else
       echo "    ✗ ни один сервер не ответил — похоже, проблема с интернетом целиком"
     fi
@@ -863,6 +876,28 @@ else
 fi
 echo ""
 if ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; then echo "  ✓ интернет у роутера есть"; else echo "  ✗ интернета у роутера нет — дело не в обходе, звони провайдеру"; fi
+
+# Службы живы, нода живая — а видео всё равно стоит. Это отдельная поломка:
+# её лечит не нода, а стратегия обхода. Раньше «Починить» про неё вообще не
+# спрашивал и бодро отвечал «чинить было нечего» человеку, у которого ютуб
+# висит. Спрашиваем и, если видео режут, зовём лечение — оно само решит, есть
+# ли повод и не рано ли после прошлого раза.
+echo ""
+live=0; total=0
+for h in rr1---sn-4g5e6nzz rr2---sn-4g5ednse rr3---sn-4g5edned redirector; do
+  total=$((total + 1))
+  c=$(curl -4 -o /dev/null -sS -m 6 -w "%{http_code}" "https://$h.googlevideo.com/generate_204" 2>/dev/null) || c=000
+  case "$c" in 200|204) live=$((live + 1)) ;; esac
+done
+if [ "$total" -gt 0 ] && [ $((live * 100 / total)) -lt 60 ]; then
+  echo "  ! до видео пробилось $live из $total узлов — режут поток, а не ноду"
+  if [ -x /usr/sbin/ytwatch ]; then
+    /usr/sbin/ytwatch heal 2>&1 | sed "s/^/    /"
+    changed=1
+  fi
+else
+  echo "  ✓ путь до видео открыт ($live из $total узлов)"
+fi
 echo ""
 [ "$changed" = 1 ] && echo "ГОТОВО: что-то починил, попробуй ещё раз." || echo "ГОТОВО: чинить было нечего, всё и так работало."
 '

@@ -36,11 +36,28 @@ CDN_MIN=${YTWATCH_CDN_MIN:-60}
 
 kbps() { echo $(( ${1%%.*} / 1024 )); }
 
+# Список выше — угаданные имена, и это его слабое место: краевой узел выдаётся
+# под сеть и под сессию, у другого провайдера половина этих имён не отвечает
+# никогда. Поэтому, если Дек подлил свежий адрес видео (ytwatch url), берём имя
+# прямо из него: это ровно тот узел, с которого шло бы видео здесь и сейчас.
+cdn_hosts() {
+  h=""
+  if [ -f "$URLF" ]; then
+    h=$(sed -n 's#^https\{0,1\}://\([^/]*\)\.googlevideo\.com/.*#\1#p' "$URLF" | head -1)
+  fi
+  if [ -n "$h" ]; then
+    printf '%s\n' "$h"
+    for x in $CDN_HOSTS; do [ "$x" = "$h" ] || printf '%s\n' "$x"; done | head -4
+  else
+    printf '%s\n' $CDN_HOSTS
+  fi
+}
+
 # Печатает «живых всего мс». Трафика почти нет: только TLS-рукопожатие и
 # пустой ответ 204 на каждый узел.
 cdn_probe() {
   live=0; total=0; ms=0
-  for h in $CDN_HOSTS; do
+  for h in $(cdn_hosts); do
     total=$((total + 1))
     r=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code} %{time_total}' \
           "https://$h.googlevideo.com/generate_204" 2>/dev/null) || r="000 6"
@@ -178,6 +195,9 @@ cmd_stat() {
 # он гоняет кандидатов на живом обходе и оставляет самого быстрого.
 # Ноду не трогаем: видео идёт мимо неё.
 HEAL_STAMP=/tmp/ytwatch.heal
+TUNE_STAMP=/tmp/ytwatch.tune
+# blockcheck гасит обход всему дому, поэтому у него свой, более редкий срок
+TUNE_COOLDOWN=${YTWATCH_TUNE_COOLDOWN:-43200}
 HEAL_WINDOW=${YTWATCH_HEAL_WINDOW:-12}   # сколько последних замеров смотрим
 HEAL_AFTER=${YTWATCH_HEAL_AFTER:-5}      # плохих в этом окне — повод лечить
 HEAL_COOLDOWN=${YTWATCH_HEAL_COOLDOWN:-21600}   # не чаще раза в 6 часов
@@ -223,8 +243,16 @@ cmd_heal() {
     return 0
   fi
 
-  echo "$now" > "$HEAL_STAMP"
-  echo ":: плохих $bad из последних $HEAL_WINDOW — запускаю подбор стратегии"
+  echo ":: плохих $bad из последних $HEAL_WINDOW — разбираюсь"
+
+  # Связи может не быть вовсе: WAN отвалился, провайдер лёг, роутер только что
+  # загрузился. Тогда узлы CDN «мертвы» совсем по другой причине, и подбор
+  # стратегии только зря погасит обход и сожжёт полчаса.
+  c=$(curl -s -o /dev/null -m 8 -w '%{http_code}' https://www.gstatic.com/generate_204 2>/dev/null)
+  case "$c" in
+    2??|3??) : ;;
+    *) echo ":: наружу не отвечает и gstatic (код ${c:-000}) — это не про стратегию, жду связь"; return 0 ;;
+  esac
 
   # Свежие кандидаты есть только после blockcheck. Но blockcheck на время
   # работы гасит zapret — у всех в доме отваливается обход на несколько
@@ -232,20 +260,29 @@ cmd_heal() {
   # если не отвечает НИ ОДИН узел CDN, обход и так уже ничего не даёт,
   # и терять нечего.
   if ! /usr/sbin/zapret-tune result 2>/dev/null | grep -q .; then
+    tlast=$(cat "$TUNE_STAMP" 2>/dev/null || echo 0)
+    if [ $((now - tlast)) -lt "$TUNE_COOLDOWN" ]; then
+      echo ":: blockcheck гоняли $(( (now - tlast) / 3600 )) ч назад и кандидатов он не дал — жду"
+      return 0
+    fi
     h=$(date +%H)
     dead=$(tail -1 "$LOG" | awk '{split($8,a,"/"); print (a[1]=="0") ? 1 : 0}')
     if [ "${dead:-0}" != 1 ] && { [ "$h" -lt "$HEAL_HOUR_FROM" ] || [ "$h" -ge "$HEAL_HOUR_TO" ]; }; then
       echo ":: кандидатов нет, а blockcheck гасит обход — жду тихого часа ($HEAL_HOUR_FROM:00-$HEAL_HOUR_TO:00)"
-      rm -f "$HEAL_STAMP"   # не тратим кулдаун впустую
       return 0
     fi
     echo ":: кандидатов нет, запускаю blockcheck (обход на это время отключится)"
+    echo "$now" > "$TUNE_STAMP"
     /usr/sbin/zapret-tune start "$HEAL_DOMAIN" quick
+    # Кандидаты появятся минут через десять-двадцать. Кулдаун свипа тут НЕ
+    # ставим: иначе найденные стратегии полдня лежат неприменёнными — так уже
+    # было, blockcheck отрабатывал ночью, а свип ждал шести часов впустую.
     return 0
   fi
 
   # Свип не гасит обход: гоняет кандидатов на живом zapret и оставляет
   # лучшего — его можно и днём.
+  echo "$now" > "$HEAL_STAMP"
   /usr/sbin/zapret-sweep start 8
 }
 

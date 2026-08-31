@@ -33,12 +33,21 @@ tell() {
   # shellcheck disable=SC1091
   . /etc/rctl-bot.conf 2>/dev/null || return 0
   [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
+  sent=1
   for chat in $BOT_ALLOW; do
-    curl -s -o /dev/null -m 15 --socks5-hostname "${BOT_PROXY:-$SOCKS}" \
-      "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-      --data-urlencode "chat_id=$chat" \
-      --data-urlencode "text=$1" 2>/dev/null || true
+    # Сначала через ноду, потом напрямую. Сообщение шлётся как раз тогда,
+    # когда через ноду ничего не ходит, — канал доставки не должен совпадать
+    # с тем, что сломалось.
+    for way in "--socks5-hostname ${BOT_PROXY:-$SOCKS}" ""; do
+      # shellcheck disable=SC2086
+      c=$(curl -s -o /dev/null -m 15 -w '%{http_code}' $way \
+        "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+        --data-urlencode "chat_id=$chat" \
+        --data-urlencode "text=$1" 2>/dev/null)
+      [ "$c" = 200 ] && { sent=0; break; }
+    done
   done
+  return $sent
 }
 
 # Один заход по настоящей дороге: код ответа через SOCKS ноды.
@@ -78,8 +87,9 @@ if passes; then
   # не частим: одно сообщение в час, даже если ноды сыплются одна за другой
   now=$(date +%s); last=$(cat "$STAMP" 2>/dev/null || echo 0)
   if [ $((now - last)) -gt 3600 ]; then
-    echo "$now" > "$STAMP"
-    tell "Нода «$was» перестала пропускать трафик — пересел на «$now_node». Сайты через прокси снова работают."
+    # штамп ставим по факту доставки: недоставленное сообщение не должно
+    # запирать канал на час
+    tell "Нода «$was» перестала пропускать трафик — пересел на «$now_node». Сайты через прокси снова работают." && echo "$now" > "$STAMP"
   fi
   exit 0
 fi
@@ -96,6 +106,5 @@ fi
 say "через ноду по-прежнему не проходит — нужен разбор руками"
 now=$(date +%s); last=$(cat "$STAMP" 2>/dev/null || echo 0)
 if [ $((now - last)) -gt 3600 ]; then
-  echo "$now" > "$STAMP"
-  tell "Прокси не работает: ни одна нода не пропускает трафик, перезапуск ядра не помог. Проверь подписку — /nodes, /status."
+  tell "Прокси не работает: ни одна нода не пропускает трафик, перезапуск ядра не помог. Проверь подписку — /nodes, /status." && echo "$now" > "$STAMP"
 fi

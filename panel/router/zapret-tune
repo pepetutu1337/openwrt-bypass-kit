@@ -96,9 +96,11 @@ cmd_status() {
   [ -n "$cur" ] && echo "сейчас: $cur"
   # "* …" — фаза (их единицы), "- …" — конкретная проверяемая стратегия.
   # Считать надо вторые, иначе счётчик стоит на месте и кажется, что подбор завис.
-  echo "фаз пройдено: $(grep -c "^\* " "$LOG" 2>/dev/null || echo 0)"
-  echo "стратегий проверено: $(grep -c "^- " "$LOG" 2>/dev/null || echo 0)"
-  echo "найдено рабочих: $(cmd_result | grep -c . 2>/dev/null || echo 0)"
+  # grep -c при нуле совпадений печатает 0 И выходит с кодом 1 — без head
+  # получаются две строки «0 0» в отчёте
+  echo "фаз пройдено: $({ grep -c "^\* " "$LOG" 2>/dev/null || echo 0; } | head -1)"
+  echo "стратегий проверено: $({ grep -c "^- " "$LOG" 2>/dev/null || echo 0; } | head -1)"
+  echo "найдено рабочих: $({ cmd_result | grep -c . 2>/dev/null || echo 0; } | head -1)"
 }
 
 # рабочие стратегии из секции SUMMARY: строки вида
@@ -141,6 +143,9 @@ cmd_apply() {
 
   ts=$(date +%Y%m%d-%H%M%S)
   cp "$CFG" "$CFG.bak-$ts"
+  # Бэкапы конфига лежат на флеше роутера и копятся годами: свип с починкой
+  # ходят по нескольку раз в сутки. Держим три последних.
+  ls -t "$CFG".bak-* 2>/dev/null | tail -n +4 | while read -r old; do rm -f "$old"; done
 
   before=$(probe)
   echo "до применения: $before"
@@ -181,12 +186,25 @@ cmd_apply() {
   fi
 }
 
-# грубая проба: сколько КБ/с отдаёт страница ютуба (0, если не открылась)
+# Проба «стало лучше или хуже». Скорость страницы плеера тут не годится:
+# страницу отдают всегда, при любой стратегии, — по ней все варианты выглядели
+# одинаково, и откат срабатывал случайно. Режут именно узлы googlevideo, по
+# ним и меряем; скорость страницы оставлена доводчиком между равными.
+CDN_HOSTS=${TUNE_CDN_HOSTS:-"rr1---sn-4g5e6nzz rr2---sn-4g5ednse rr3---sn-4g5edned rr4---sn-4g5e6nz7 redirector"}
+
 probe() {
+  live=0; total=0
+  for h in $CDN_HOSTS; do
+    total=$((total + 1))
+    c=$(curl -4 -o /dev/null -sS -m 6 -w '%{http_code}' \
+          "https://$h.googlevideo.com/generate_204" 2>/dev/null) || c=000
+    case "$c" in 200|204) live=$((live + 1)) ;; esac
+  done
   r=$(curl -sS -m 25 -o /dev/null -w "%{speed_download} %{http_code}" \
         "https://www.youtube.com/watch?v=aqz-KE-bpKQ" 2>/dev/null) || r="0 000"
   set -- $r
-  echo "$(( ${1%%.*} / 1024 )) КБ/с (код $2)"
+  kb=$(( ${1%%.*} / 1024 ))
+  echo "$((live * 1000 + kb)) — $live/$total узлов CDN, $kb КБ/с (код $2)"
 }
 
 case "${1:-status}" in

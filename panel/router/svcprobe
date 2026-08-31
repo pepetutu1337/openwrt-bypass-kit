@@ -32,7 +32,14 @@ SWITCH_AFTER=${SVCPROBE_SWITCH_AFTER:-2}
 
 mkdir -p "$STREAK_DIR"
 
-logline() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+logline() {
+  echo "$(date '+%F %T') $*" >> "$LOG"
+  # Журнал живёт в tmpfs и пишется каждые пять минут: без обрезки он спокойно
+  # съедает память роутера за месяц аптайма.
+  if [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 65536 ]; then
+    tail -n 200 "$LOG" > "$LOG.trim" 2>/dev/null && mv "$LOG.trim" "$LOG"
+  fi
+}
 
 # ---- конфиг по умолчанию ----------------------------------------------------
 # формат: имя|kind|хост|url|минимум_КБ_с|лёгкий_url
@@ -64,10 +71,16 @@ resolve() {
 
 in_proxyset() { nft get element inet fw4 proxy4 "{ $1 }" >/dev/null 2>&1; }
 
-# нода жива вообще? (не про конкретный сервис — только сама труба)
+# Нода жива вообще? (не про конкретный сервис — только сама труба.)
+# Спрашивать у clash задержку группы `auto` тут нельзя: селектор почти всегда
+# закреплён на конкретной ноде, и `auto` меряет ту, через которую не идёт ни
+# одного пакета. Ходим тем же socks, которым пойдёт трафик.
 node_alive() {
-  curl -s -m 10 "http://$API/proxies/auto/delay?url=http://www.gstatic.com/generate_204&timeout=5000" |
-    grep -q '"delay"'
+  c=$(curl -s -o /dev/null -m 10 -w '%{http_code}' \
+        --socks5-hostname "127.0.0.1:$SOCKS_PORT" \
+        https://www.gstatic.com/generate_204 2>/dev/null)
+  case "$c" in 2??|3??) return 0 ;; esac
+  return 1
 }
 
 active_node() {
@@ -79,9 +92,28 @@ active_node() {
   fi
 }
 
+# Имена нод приходят из подписки: пробелы, эмодзи, кириллица. Прежний разбор
+# резал список по запятым И по пробелам — «🇪🇪 Таллин» превращалось в две
+# несуществующие ноды. Матрица от этого целиком состояла из прочерков, замены
+# не находилось никогда, и автоматика писала «ни одна нода не тянет», хотя все
+# были живы. Поэтому список строго построчно, а в URL имя кодируем.
 all_nodes() {
   curl -s -m 4 "http://$API/proxies/proxy" |
-    sed -n 's/.*"all": *\[\([^]]*\)\].*/\1/p' | tr -d '"' | tr ',' ' '
+    sed -n 's/.*"all": *\[\([^]]*\)\].*/\1/p' |
+    grep -o '"[^"]*"' | sed 's/^"//; s/"$//'
+}
+
+urlenc() {
+  # Побайтно: имя в UTF-8, посимвольный разбор тут не годится. od в этой
+  # сборке busybox нет, hexdump есть.
+  printf '%s' "$1" | hexdump -v -e '1/1 "%02x "' | tr ' ' '\n' | grep -v '^$' |
+    while read -r h; do
+      c=$(printf "\\x$h")
+      case "$c" in
+        [a-zA-Z0-9.~_-]) printf '%s' "$c" ;;
+        *) printf '%%%s' "$h" ;;
+      esac
+    done
 }
 
 # ---- один сервис ------------------------------------------------------------
@@ -214,17 +246,22 @@ cmd_score() {
   nodes=$(all_nodes)
   [ -n "$nodes" ] || { echo "clash API $API молчит"; return 1; }
   svcs=$(grep -vE '^\s*#|^\s*$' "$CONF" | awk -F'|' '$2=="proxy"' | wc -l)
-  ncnt=$(echo "$nodes" | tr ' ' '\n' | grep -vc '^auto$')
+  # Имена нод содержат пробелы, поэтому список живёт в файле построчно, а не
+  # в переменной через пробел: иначе цикл разваливает имя на куски.
+  nf=/tmp/svcprobe.nodes; printf '%s\n' "$nodes" | grep -v '^auto$' > "$nf"
+  ncnt=$(wc -l < "$nf")
   echo "total $((svcs * ncnt))" > "$SCORE.total"
 
   grep -vE '^\s*#|^\s*$' "$CONF" | while IFS='|' read -r name kind host url minkb; do
     [ "$kind" = proxy ] || continue
-    for n in $nodes; do
-      [ "$n" = auto ] && continue
-      ms=$(curl -s -m 12 "http://$API/proxies/$n/delay?url=$url&timeout=6000" |
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      ms=$(curl -s -m 12 "http://$API/proxies/$(urlenc "$n")/delay?url=$url&timeout=6000" |
              sed -n 's/.*"delay": *\([0-9][0-9]*\).*/\1/p')
-      echo "score $name $n ${ms:--} $(date +%s)" >> "$SCORE"
-    done
+      # Поля разделяем табуляцией: в имени ноды бывают пробелы, и разбор по
+      # пробелам уводил бы столбцы.
+      printf 'score\t%s\t%s\t%s\t%s\n' "$name" "$n" "${ms:--}" "$(date +%s)" >> "$SCORE"
+    done < "$nf"
   done
   echo "done" >> "$SCORE.total"
   cmd_scorelog
@@ -243,7 +280,7 @@ cmd_score_bg() {
 cmd_scorelog() {
   [ -f "$SCORE" ] || { echo "матрица ещё не считалась"; return 0; }
   total=$(sed -n 's/^total //p' "$SCORE.total" 2>/dev/null | head -1)
-  have=$(grep -c '^score ' "$SCORE" 2>/dev/null || echo 0)
+  have=$({ grep -c '^score\t' "$SCORE" 2>/dev/null || echo 0; } | head -1)
   if grep -q '^done' "$SCORE.total" 2>/dev/null; then
     echo ":: матрица готова ($have замеров)"
   else
@@ -255,14 +292,14 @@ cmd_scorelog() {
   # не работает — busybox awk считает ширину в БАЙТАХ, и любая кириллица
   # («нет», «нода») уводит колонку на два байта за символ.
   # Ноды в строках, сервисы в столбцах: видно, кто по какому сервису живой.
-  awk '$1=="score"{v[$3" "$2]=$4; svc[$2]=1; nod[$3]=1}
+  awk -F'\t' '$1=="score"{v[$3"\t"$2]=$4; svc[$2]=1; nod[$3]=1}
        END{
          h="tbl|нода"
          for (s in svc) h=h"|"s
          print h
          for (n in nod){
            r="tbl|"n
-           for (s in svc){ x=v[n" "s]; r=r"|"(x=="" ? "·" : (x=="-" ? "нет" : x" мс")) }
+           for (s in svc){ x=v[n"\t"s]; r=r"|"(x=="" ? "·" : (x=="-" ? "нет" : x" мс")) }
            print r
          }
        }' "$SCORE"
@@ -276,7 +313,7 @@ best_common() {
   now=$(date +%s)
   want=$*
   cnt=$(echo "$want" | wc -w)
-  awk -v want="$want" -v now="$now" -v cnt="$cnt" '
+  awk -F'\t' -v want="$want" -v now="$now" -v cnt="$cnt" '
     $1=="score" && (now-$5)<7200 {
       if (index(" "want" ", " "$2" ")) {
         if ($4=="-") bad[$3]=1
@@ -295,8 +332,8 @@ best_common() {
 best_for() {
   svc=$1; now=$(date +%s)
   [ -f "$SCORE" ] || return 1
-  awk -v s="$svc" -v now="$now" '$1=="score" && $2==s && $4!="-" && (now-$5)<7200 {print $4" "$3}' "$SCORE" |
-    sort -n | head -1 | awk '{print $2}'
+  awk -F'\t' -v s="$svc" -v now="$now" '$1=="score" && $2==s && $4!="-" && (now-$5)<7200 {print $4"\t"$3}' "$SCORE" |
+    sort -n | head -1 | cut -f2
 }
 
 # ---- автоматика -------------------------------------------------------------
@@ -310,12 +347,22 @@ tell() {
   # shellcheck disable=SC1091
   . /etc/rctl-bot.conf 2>/dev/null || return 0
   [ -n "${BOT_TOKEN:-}" ] && [ -n "${BOT_ALLOW:-}" ] || return 0
-  echo "$now" > "$TELL_STAMP"
+  sent=1
   for chat in $BOT_ALLOW; do
-    curl -s -o /dev/null -m 15 --socks5-hostname "${BOT_PROXY:-127.0.0.1:$SOCKS_PORT}" \
-      "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-      --data-urlencode "chat_id=$chat" --data-urlencode "text=$1" 2>/dev/null || true
+    # Через ноду, а не вышло — напрямую. Сообщение шлётся именно тогда, когда
+    # через ноду ничего не ходит: доставлять его той же дорогой бессмысленно.
+    for way in "--socks5-hostname ${BOT_PROXY:-127.0.0.1:$SOCKS_PORT}" ""; do
+      # shellcheck disable=SC2086
+      c=$(curl -s -o /dev/null -m 15 -w '%{http_code}' $way \
+        "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+        --data-urlencode "chat_id=$chat" --data-urlencode "text=$1" 2>/dev/null)
+      [ "$c" = 200 ] && { sent=0; break; }
+    done
   done
+  # штамп — только по факту доставки, иначе непрошедшее сообщение запирает
+  # канал на час и хозяин так ничего и не узнаёт
+  [ "$sent" = 0 ] && echo "$now" > "$TELL_STAMP"
+  return $sent
 }
 
 cmd_auto() {

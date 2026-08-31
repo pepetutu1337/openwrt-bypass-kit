@@ -98,6 +98,9 @@ cmd_start() {
   fi
   cp "$CFG" "$ORIG"
   cp "$CFG" "$CFG.bak-sweep-$(date +%Y%m%d-%H%M%S)"
+  # Бэкапы конфига лежат на флеше роутера и копятся годами: свип с починкой
+  # ходят по нескольку раз в сутки. Держим три последних.
+  ls -t "$CFG".bak-* 2>/dev/null | tail -n +4 | while read -r old; do rm -f "$old"; done
   : > "$OUT"
   echo "start $(date +%s) $n" > "$STATE"
 
@@ -152,7 +155,8 @@ cmd_status() {
   set -- $(cat "$STATE")
   st=$1; ts=${2:-0}; tail3=${3:-}
   # в строке start третье поле — сколько кандидатов, в done — что сделали
-  case "$st" in start) total=$tail3 ;; *) total=$(grep -c '^cand ' "$OUT" 2>/dev/null || echo '?') ;; esac
+  # grep -c при нуле совпадений печатает 0 И выходит 1 — без head выйдут две строки
+  case "$st" in start) total=$tail3 ;; *) total=$({ grep -c '^cand ' "$OUT" 2>/dev/null || echo '?'; } | head -1) ;; esac
   el=$(( $(date +%s) - ts ))
   running=0
   [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null && running=1
@@ -162,7 +166,7 @@ cmd_status() {
     aborted) echo "фаза: прерван" ;;
   esac
   echo "прошло: $((el / 60)) мин $((el % 60)) с"
-  echo "проверено кандидатов: $(grep -c '^cand ' "$OUT" 2>/dev/null || echo 0) из $total"
+  echo "проверено кандидатов: $({ grep -c '^cand ' "$OUT" 2>/dev/null || echo 0; } | head -1) из $total"
   b=$(grep '^base ' "$OUT" 2>/dev/null | awk '{print $3" узлов, "$4" КБ/с"}')
   [ -n "$b" ] && echo "было: $b"
   best=$(grep '^cand ' "$OUT" 2>/dev/null | sort -k2 -nr | head -1 | awk '{print $3" узлов, "$4" КБ/с"}')

@@ -316,6 +316,8 @@ zapret_apply() {
   zapret_install || return 1
   cfg=/opt/zapret/config
   cp "$cfg" "$cfg.bak.$(date +%s)" 2>/dev/null || true
+  # бэкапы лежат на флеше и копятся с каждым apply — держим три последних
+  ls -t "$cfg".bak.* 2>/dev/null | tail -n +4 | while read -r old; do rm -f "$old"; done
   # срезаем прошлый netkit-блок
   sed -i '/# >>> netkit/,/# <<< netkit/d' "$cfg" 2>/dev/null || true
   {
@@ -336,7 +338,14 @@ zapret_apply() {
   printf '%s\n' "$ZAPRET_HOSTS" | sed '/^[[:space:]]*$/d' > /opt/zapret/ipset/zapret-hosts-user.txt
   /etc/init.d/zapret enable 2>/dev/null || true
   /etc/init.d/zapret restart 2>/dev/null || /opt/zapret/init.d/openwrt/zapret restart 2>/dev/null || true
-  ok "zapret настроен и перезапущен"
+  sleep 2
+  # Рапортовать «перезапущен», не посмотрев, поднялся ли он, — это как раз тот
+  # случай, когда установка «прошла успешно», а обхода нет.
+  if pidof nfqws >/dev/null 2>&1; then
+    ok "zapret настроен и перезапущен"
+  else
+    warn "zapret настроен, но nfqws не запустился — смотри logread -e zapret"
+  fi
 }
 
 # ---------- сервисы прокси-стека ----------
@@ -408,14 +417,59 @@ EOF
 deploy_watchdog() {
   cat > /usr/sbin/proxy-watchdog <<EOF
 #!/bin/sh
-# генерируется netkit. Если прокси-нода упала — форсирует пересбор (restart sing-box).
-API="http://127.0.0.1:$CLASH_PORT/proxies/auto/delay?url=https://www.gstatic.com/generate_204&timeout=8000"
-check() { curl -s -m 12 "\$API" 2>/dev/null | grep -q '"delay"'; }
-if check; then exit 0; fi
-sleep 3; if check; then exit 0; fi
-logger -t proxy-watchdog "нода не отвечает — перезапускаю sing-box"
-/etc/init.d/sing-box restart 2>/dev/null; sleep 6
-check && logger -t proxy-watchdog "восстановлено" || logger -t proxy-watchdog "живой ноды нет (все недоступны?)"
+# генерируется netkit. Следит за тем, что через ноду реально ходит трафик.
+#
+# Прежняя версия спрашивала у clash задержку группы auto. Но селектор обычно
+# закреплён на конкретной ноде, и auto меряет ту, через которую не идёт ни
+# одного пакета: нода лежит, сайты не открываются, а сторож рапортует «всё
+# хорошо». Ловилось живьём. Поэтому проверка идёт тем же socks, которым идёт
+# трафик, а лечение начинается с пересадки на живую ноду — перезапуск ядра
+# только если это не помогло.
+API=127.0.0.1:$CLASH_PORT
+SOCKS=127.0.0.1:$SOCKS_DIAG
+
+# Имена функций латиницей не для красоты: busybox ash не принимает в них
+# кириллицу — вызов молча становится «not found».
+via_node() {
+  curl -s -o /dev/null -m 12 -w '%{http_code}' --socks5-hostname "\$SOCKS" "\$1" 2>/dev/null
+}
+passes() {
+  c=\$(via_node https://www.gstatic.com/generate_204)
+  case "\$c" in 2??|3??) return 0 ;; esac
+  c=\$(via_node https://www.cloudflare.com/cdn-cgi/trace)
+  case "\$c" in 2??|3??) return 0 ;; esac
+  return 1
+}
+active_node() {
+  n=\$(curl -s -m 4 "http://\$API/proxies/proxy" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p')
+  [ "\$n" = auto ] && n=\$(curl -s -m 4 "http://\$API/proxies/auto" | sed -n 's/.*"now": *"\([^"]*\)".*/\1/p')
+  echo "\$n"
+}
+passes && exit 0
+sleep 4
+passes && exit 0
+
+was=\$(active_node)
+logger -t proxy-watchdog "через ноду (\$was) трафик не идёт — ищу живую"
+
+# 1. Пересесть на живую: это лечит причину, а не симптом.
+d=\$(curl -s -m 30 "http://\$API/group/proxy/delay?url=http://www.gstatic.com/generate_204&timeout=3000")
+best=\$(printf '%s' "\$d" | tr ',' '\n' | grep '"' | sed -n 's/.*"\([^"]*\)": *\([0-9][0-9]*\).*/\2 \1/p' | sort -n | head -1 | cut -d' ' -f2-)
+if [ -n "\$best" ] && [ "\$best" != "\$was" ]; then
+  curl -s -o /dev/null -X PUT "http://\$API/proxies/proxy" -d "{\"name\":\"\$best\"}"
+  sleep 3
+  if passes; then
+    logger -t proxy-watchdog "помогло: \$was -> \$best"
+    exit 0
+  fi
+fi
+
+# 2. Не помогло — перезапустить ядро.
+logger -t proxy-watchdog "смена ноды не помогла — перезапускаю sing-box"
+/etc/init.d/sing-box restart >/dev/null 2>&1
+sleep 8
+passes && logger -t proxy-watchdog "восстановлено" \
+       || logger -t proxy-watchdog "ни одна нода не пропускает трафик — проверь подписку"
 EOF
   chmod +x /usr/sbin/proxy-watchdog
   cron_line "/usr/sbin/proxy-watchdog" "$WATCHDOG_CRON" "$WATCHDOG_ENABLE"
@@ -489,8 +543,15 @@ cron_line() {  # $1=команда $2=расписание $3=вкл(1/0)
 
 deploy_scripts() {
   deploy_geoblock; ok "geoblock-update развёрнут (крон: ${GEOBLOCK_CRON})"
-  [ "$PROXY_ENABLE" = 1 ] && { deploy_watchdog; ok "proxy-watchdog развёрнут (крон: ${WATCHDOG_CRON})"; }
-  [ "$PROXY_ENABLE" = 1 ] && { deploy_telegram_cidr; ok "telegram-cidr-update развёрнут (крон: ${TELEGRAM_CIDR_CRON}, вкл=${TELEGRAM_CIDR_AUTOUPDATE})"; }
+  # Здесь стояло `[ "$PROXY_ENABLE" = 1 ] && { ... }` последней строкой функции.
+  # При выключенном прокси функция возвращала 1, и весь установщик под set -e
+  # умирал ровно тут — молча, не поставив ни zapret, ни geoblock-список. Тому,
+  # кто ставит кит только ради zapret, не доставалось ничего.
+  if [ "$PROXY_ENABLE" = 1 ]; then
+    deploy_watchdog; ok "proxy-watchdog развёрнут (крон: ${WATCHDOG_CRON})"
+    deploy_telegram_cidr; ok "telegram-cidr-update развёрнут (крон: ${TELEGRAM_CIDR_CRON}, вкл=${TELEGRAM_CIDR_AUTOUPDATE})"
+  fi
+  return 0
 }
 
 # =================== КОМАНДЫ ===================
