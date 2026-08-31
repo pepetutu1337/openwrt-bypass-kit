@@ -51,7 +51,7 @@ if [ "$MODE" = uninstall ]; then
            /usr/sbin/zapret-sweep /usr/sbin/svcprobe /etc/svcprobe.conf \
            /usr/sbin/ytwatch /usr/sbin/dnsforce /etc/nftables.d/22-dns-force.nft \
            /usr/sbin/proxy-watchdog /usr/sbin/zapret-guard /usr/sbin/subsync \
-           /usr/sbin/rudns-guard \
+           /usr/sbin/rudns-guard /etc/rudns.fallback /etc/subsync.stamp /etc/geoblock.stamp \
            /usr/sbin/rescue /etc/rescue.conf \
            /usr/sbin/rctl-bot /etc/init.d/rctl-bot /etc/rctl-bot.conf /etc/rctl-bot.acl
     # Строки крона надо убирать все: иначе крон каждые три минуты зовёт файл,

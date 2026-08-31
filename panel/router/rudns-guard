@@ -33,7 +33,12 @@ SPLITD=${SPLITD:-/etc/dnsmasq.d/split-ru.conf}
 DRYRUN=${RUDNS_DRYRUN:-0}
 RU_DOH_PORT=${RU_DOH_PORT:-5055}
 RU_DNS=${RU_DNS:-77.88.8.8}
-FALLBACK=${FALLBACK:-/tmp/rudns.fallback}
+# Штамп отката живёт на флеше, а не в /tmp. В /tmp он не пережил бы
+# перезагрузку: конфиг с открытым 53 остаётся на месте, штамп исчезает, и
+# сторож при следующем заходе считает открытый 53 выбором хозяина. РФ-зоны
+# тогда навсегда остаются на пути, где отвечает ТСПУ, и никто об этом не
+# узнает — откат без возврата хуже, чем отсутствие отката.
+FALLBACK=${FALLBACK:-/etc/rudns.fallback}
 TELL_STAMP=${TELL_STAMP:-/tmp/rudns.tell}
 QUEUE=${QUEUE:-/tmp/notify.queue}
 LOCK=${LOCK:-/tmp/rudns-guard.lock}
@@ -100,16 +105,31 @@ restart_doh() {
   sleep 5
 }
 
+# Пишем через временный файл РЯДОМ с целью и mv, а не cp из /tmp. cp
+# обрезает файл и льёт содержимое частями: пропадёт питание в этот миг — на
+# флеше останется обрубок, dnsmasq с битым include не стартует, и весь дом
+# остаётся без DNS вообще. mv в пределах одной файловой системы атомарен:
+# либо старый файл, либо новый, промежутка нет.
+# Временный файл — с точки в начале имени. dnsmasq читает conf-dir целиком,
+# без фильтра по расширению: любой файл, оставшийся тут после обрыва, станет
+# живым куском конфига. Имена с точки dnsmasq пропускает, поэтому обрубок
+# после отключения питания просто полежит мусором, а не подцепится upstream'ом.
+TMPD=$(dirname "$SPLITD")/.$(basename "$SPLITD").tmp
+
+put() { # put -> заменить $SPLITD подготовленным TMPD
+  mv "$TMPD" "$SPLITD"
+}
+
 to_plain() {
-  sed "s|^server=/\(.*\)/127\.0\.0\.1#$RU_DOH_PORT\$|server=/\1/$RU_DNS|" "$SPLITD" > /tmp/split-ru.new &&
-    cp /tmp/split-ru.new "$SPLITD"
+  sed "s|^server=/\(.*\)/127\.0\.0\.1#$RU_DOH_PORT\$|server=/\1/$RU_DNS|" "$SPLITD" > "$TMPD" &&
+    put
   restart_dnsmasq
 }
 
 to_doh() {
   sed "s|^server=/\(.*\)/77\.88\.8\.[0-9]*\$|server=/\1/127.0.0.1#$RU_DOH_PORT|" "$SPLITD" |
-    awk '/^server=/ { if (seen[$0]++) next } { print }' > /tmp/split-ru.new &&
-    cp /tmp/split-ru.new "$SPLITD"
+    awk '/^server=/ { if (seen[$0]++) next } { print }' > "$TMPD" &&
+    put
   restart_dnsmasq
 }
 

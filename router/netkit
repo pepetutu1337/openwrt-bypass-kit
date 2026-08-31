@@ -287,7 +287,10 @@ gen_splitdns() {
         [ -n "$RU_DNS2" ] && echo "server=/$z/$RU_DNS2"
       fi
     done
-  } > "$SPLITD"
+  } > "$(dirname "$SPLITD")/.$(basename "$SPLITD").tmp"
+  # mv в той же папке атомарен. Имя временного файла — с точки: dnsmasq читает
+  # conf-dir целиком, и обрубок с обычным именем стал бы живым куском конфига.
+  mv "$(dirname "$SPLITD")/.$(basename "$SPLITD").tmp" "$SPLITD"
   if [ "$RU_DOH_ENABLE" = 1 ]; then
     ok "split-DNS: $(lines "$CFG/ru-split.list" | wc -l) РФ-зон/сервисов → DoH 127.0.0.1:$RU_DOH_PORT"
   else
@@ -528,13 +531,25 @@ while IFS= read -r d; do
   printf 'nftset=/%s/4#inet#fw4#proxy4\n' "\$d"
   printf 'nftset=/%s/6#inet#fw4#proxy6\n' "\$d"
 done < "\$tmpd" > "\$tmpc"
-[ -f "\$OUT" ] && cp "\$OUT" "\$OUT.bak"
-mv "\$tmpc" "\$OUT"
+# Копия для отката ложится в /tmp, а НЕ рядом с конфигом. dnsmasq читает
+# conf-dir целиком, без фильтра по расширению: geoblock.conf.bak рядом с
+# geoblock.conf — это не бэкап, а второй живой список, который тихо
+# подмешивается к первому. Ловил на живом роутере.
+[ -f "\$OUT" ] && cp "\$OUT" /tmp/geoblock.conf.bak
+# Подмена через файл в той же папке и mv: mv атомарен, а mv из /tmp — это
+# копирование через границу файловых систем, и обрыв питания оставит обрубок.
+gtmp="\$(dirname "\$OUT")/.geoblock.tmp"
+if cp "\$tmpc" "\$gtmp"; then
+  rm -f "\$tmpc"; mv "\$gtmp" "\$OUT"
+else
+  log "не смог записать \$OUT (места на флеше нет?) — оставляю прежний список"
+  rm -f "\$gtmp" "\$tmpc"; exit 1
+fi
 if /etc/init.d/dnsmasq restart 2>/dev/null && sleep 2 && pgrep -x dnsmasq >/dev/null; then
   log "geoblock обновлён: \$n доменов"
   date +%s > "\$STAMP"
 else
-  log "dnsmasq не поднялся — откат"; [ -f "\$OUT.bak" ] && mv "\$OUT.bak" "\$OUT" || rm -f "\$OUT"
+  log "dnsmasq не поднялся — откат"; [ -f /tmp/geoblock.conf.bak ] && cp /tmp/geoblock.conf.bak "\$OUT" || rm -f "\$OUT"
   /etc/init.d/dnsmasq restart 2>/dev/null || true; exit 1
 fi
 EOF
@@ -630,8 +645,20 @@ tmpc=\$(mktemp)
   grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\$' "\$TMP"
   grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}\$' "\$TMP"
 } > "\$tmpc"
-[ -f "\$OUT" ] && cp "\$OUT" "\$OUT.bak"
-mv "\$tmpc" "\$OUT"
+# Копия для отката ложится в /tmp, а НЕ рядом с конфигом. dnsmasq читает
+# conf-dir целиком, без фильтра по расширению: geoblock.conf.bak рядом с
+# geoblock.conf — это не бэкап, а второй живой список, который тихо
+# подмешивается к первому. Ловил на живом роутере.
+[ -f "\$OUT" ] && cp "\$OUT" /tmp/geoblock.conf.bak
+# Подмена через файл в той же папке и mv: mv атомарен, а mv из /tmp — это
+# копирование через границу файловых систем, и обрыв питания оставит обрубок.
+gtmp="\$(dirname "\$OUT")/.geoblock.tmp"
+if cp "\$tmpc" "\$gtmp"; then
+  rm -f "\$tmpc"; mv "\$gtmp" "\$OUT"
+else
+  log "не смог записать \$OUT (места на флеше нет?) — оставляю прежний список"
+  rm -f "\$gtmp" "\$tmpc"; exit 1
+fi
 tmpn=\$(mktemp)
 {
   echo "# генерируется netkit — правь config/telegram-cidr.list, не тут"

@@ -122,9 +122,21 @@ echo "=== split-DNS (РФ-сайты, тест www.vtb.ru) ==="
 # жив» на открытом пути ещё не значит «ответ настоящий».
 if grep -q "^server=/.*/127\.0\.0\.1#" /etc/dnsmasq.d/split-ru.conf 2>/dev/null; then
   echo "  путь: шифрованный DoH (свой https-dns-proxy)"
-  [ -f /tmp/rudns.fallback ] && echo "  ! сторож откатывал канал и ещё не вернул — смотри logread -t rudns-guard"
+  [ -f /etc/rudns.fallback ] && echo "  ! сторож откатывал канал и ещё не вернул — смотри logread -t rudns-guard"
 else
   echo "  ! путь: открытый 53 — такие ответы подменяет ТСПУ"
+fi
+# dnsmasq читает /etc/dnsmasq.d ЦЕЛИКОМ, без фильтра по расширению. Любой
+# файл, оставленный тут «на всякий случай», — не бэкап, а живой кусок
+# конфига. Один такой (split-ru.conf.bak-plain53) месяцами подмешивал
+# открытый 53 рядом с DoH: в самом split-ru.conf было честно написано
+# «через DoH», а запросы шли обоими путями, и dnsmasq выбирал быстрый.
+# Проверять сам файл поэтому мало — надо смотреть всю папку.
+stray=$(ls /etc/dnsmasq.d 2>/dev/null | grep -vE '\.conf$')
+if [ -n "$stray" ]; then
+  echo "  ! в /etc/dnsmasq.d лежит лишнее — dnsmasq читает это как конфиг:"
+  echo "$stray" | sed 's/^/      /'
+  echo "      убрать: rm /etc/dnsmasq.d/<файл> && /etc/init.d/dnsmasq restart"
 fi
 rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
 [ -n "$rip" ] && echo "  ✓ www.vtb.ru -> $rip (РФ-резолв жив)" || echo "  ✗ www.vtb.ru не резолвится — проверь split-ru/дефолт DNS"
@@ -1000,6 +1012,10 @@ case "$cmd" in
       ts=$(date +%Y%m%d-%H%M%S)
       if sing-box check -c /tmp/sb-new.json 2>/tmp/sbchk.err; then
         cp /etc/sing-box/config.json /etc/sing-box/config.json.bak-$ts
+        # Бэкапы копятся по одному на каждую заливку и никем не убирались:
+        # к августу их набралось полтора десятка на флеше в 60 МБ. Чистим
+        # только свои, с датой в имени, — именованные вручную не трогаем.
+        ls -1t /etc/sing-box/config.json.bak-20* 2>/dev/null | tail -n +6 | while IFS= read -r o; do rm -f "$o"; done
         mv /tmp/sb-new.json /etc/sing-box/config.json
         /etc/init.d/sing-box restart >/dev/null 2>&1; sleep 2
         if pidof sing-box >/dev/null 2>&1; then
