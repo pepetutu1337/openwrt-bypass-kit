@@ -34,6 +34,8 @@ CFG=/etc/netkit
 # сторож нод (авто-восстановление прокси)
 : "${WATCHDOG_ENABLE:=1}"; : "${WATCHDOG_CRON:=*/3 * * * *}"
 # авто-обновление CIDR Telegram (MTProto ходит по IP, список протухает)
+# звонки в Telegram: голос ходит по UDP, а redirect ловит только TCP
+: "${CALLS_ENABLE:=1}"; : "${TPROXY_PORT:=1101}"; : "${TPROXY_MARK:=1}"; : "${TPROXY_TABLE:=100}"
 : "${TELEGRAM_CIDR_AUTOUPDATE:=1}"; : "${TELEGRAM_CIDR_CRON:=30 4 * * 0}"
 : "${TELEGRAM_CIDR_URL:=https://core.telegram.org/resources/cidr.txt}"
 SBOX=/etc/sing-box/config.json
@@ -141,6 +143,8 @@ EOF
     --arg interval "$FAILOVER_INTERVAL" \
     --argjson fo "$([ "$FAILOVER" = 1 ] && echo true || echo false)" \
     --argjson dnsport "$NODE_DNS_PORT" \
+    --argjson calls "$( [ "$CALLS_ENABLE" = 1 ] && echo true || echo false )" \
+    --argjson tport "$TPROXY_PORT" \
     --arg rudns "$RU_DNS" \
     --arg rudns2 "${RU_DNS2:-$RU_DNS}" '
     {
@@ -172,7 +176,11 @@ EOF
         {type:"redirect",tag:"redir",listen:"0.0.0.0",listen_port:$rport,sniff:true,sniff_override_destination:true},
         {type:"socks",tag:"diag",listen:"127.0.0.1",listen_port:$sport},
         {type:"direct",tag:"dns-in",listen:"127.0.0.1",listen_port:$dnsport,network:"udp"}
-      ],
+      ]
+        # Голос звонков — UDP, и redirect его не ловит: redirect умеет только
+        # TCP. tproxy забирает UDP, не трогая маршрут по умолчанию, — в отличие
+        # от TUN, который на слабом железе кладёт роутер целиком.
+        + (if $calls then [ {type:"tproxy",tag:"tproxy-in",listen:"0.0.0.0",listen_port:$tport,network:"udp",sniff:true} ] else [] end),
       outbounds:
         ($outs)
         + [ {type:"selector",tag:"proxy",outbounds:(($tags)+(if $fo then ["auto"] else [] end)),default:$def} ]
@@ -197,25 +205,93 @@ EOF
 }
 
 # ---------- nftables: наборы proxy4/proxy6 + redirect-цепочка ----------
+#
+# Сам файл правил пишет отдельный скрипт на роутере: его же зовёт ночное
+# обновление CIDR Telegram. Два места, писавшие один и тот же файл своими
+# руками, разъезжались — в одном появлялась цепочка, в другом нет.
+deploy_nft_gen() {
+  cat > /usr/sbin/kit-nft-gen <<EOF
+#!/bin/sh
+# генерируется netkit — правь config/*, не тут.
+# Собирает $NFT из списка сетей Telegram и настроек кита.
+set -eu
+LIST="$CFG/telegram-cidr.list"
+OUT="$NFT"
+LANIF="$LAN_IFACE"
+RPORT="$REDIRECT_PORT"
+CALLS="$CALLS_ENABLE"
+TPORT="$TPROXY_PORT"
+MARK="$TPROXY_MARK"
+lines() { grep -v '^#' "\$1" 2>/dev/null | sed 's/[[:space:]]*\$//' | grep -v '^\$' || true; }
+v4=\$(lines "\$LIST" | grep -F . | grep -v : | paste -sd, - || true)
+v6=\$(lines "\$LIST" | grep -F : | paste -sd, - || true)
+tmp="\$(dirname "\$OUT")/.20-proxy.tmp"
+{
+  echo "# генерируется netkit (kit-nft-gen) — правь config/telegram-cidr.list, не тут"
+  echo "set proxy4 { type ipv4_addr; flags interval; auto-merge;"
+  [ -n "\$v4" ] && echo "  elements = { \$v4 };"
+  echo "}"
+  echo "set proxy6 { type ipv6_addr; flags interval; auto-merge;"
+  [ -n "\$v6" ] && echo "  elements = { \$v6 };"
+  echo "}"
+  # Телеграм держим отдельным набором: в proxy4 dnsmasq досыпает адреса
+  # заблокированных сайтов, а голос звонков надо отличать от них.
+  echo "set tg4 { type ipv4_addr; flags interval; auto-merge;"
+  [ -n "\$v4" ] && echo "  elements = { \$v4 };"
+  echo "}"
+  echo "set tg6 { type ipv6_addr; flags interval; auto-merge;"
+  [ -n "\$v6" ] && echo "  elements = { \$v6 };"
+  echo "}"
+  echo "chain proxy_redirect {"
+  echo "  type nat hook prerouting priority -1; policy accept;"
+  echo "  iifname \"\$LANIF\" ip  daddr @proxy4 tcp dport {80,443} redirect to :\$RPORT"
+  echo "  iifname \"\$LANIF\" ip6 daddr @proxy6 tcp dport {80,443} redirect to :\$RPORT"
+  echo "}"
+  if [ "\$CALLS" = 1 ]; then
+    echo "chain tg_tproxy {"
+    echo "  type filter hook prerouting priority mangle; policy accept;"
+    echo "  iifname \"\$LANIF\" ip  daddr @tg4 meta l4proto udp tproxy to :\$TPORT meta mark set \$MARK accept"
+    echo "  iifname \"\$LANIF\" ip6 daddr @tg6 meta l4proto udp tproxy to :\$TPORT meta mark set \$MARK accept"
+    echo "}"
+  fi
+} > "\$tmp"
+mv "\$tmp" "\$OUT"
+EOF
+  chmod +x /usr/sbin/kit-nft-gen
+}
+
 gen_nft() {
   mkdir -p /etc/nftables.d
-  {
-    echo "# генерируется netkit — правь config/*, не тут"
-    echo "set proxy4 { type ipv4_addr; flags interval; auto-merge;"
-    v4=$(lines "$CFG/telegram-cidr.list" | grep -F . | grep -v : | paste -sd, - 2>/dev/null || true)
-    [ -n "$v4" ] && echo "  elements = { $v4 };"
-    echo "}"
-    echo "set proxy6 { type ipv6_addr; flags interval; auto-merge;"
-    v6=$(lines "$CFG/telegram-cidr.list" | grep -F : | paste -sd, - 2>/dev/null || true)
-    [ -n "$v6" ] && echo "  elements = { $v6 };"
-    echo "}"
-    echo "chain proxy_redirect {"
-    echo "  type nat hook prerouting priority -1; policy accept;"
-    echo "  iifname \"$LAN_IFACE\" ip  daddr @proxy4 tcp dport {80,443} redirect to :$REDIRECT_PORT"
-    echo "  iifname \"$LAN_IFACE\" ip6 daddr @proxy6 tcp dport {80,443} redirect to :$REDIRECT_PORT"
-    echo "}"
-  } > "$NFT"
-  ok "nft-набор + redirect-цепочка записаны ($NFT)"
+  deploy_nft_gen
+  /usr/sbin/kit-nft-gen
+  ok "nft-наборы и цепочки записаны ($NFT)"
+}
+
+# ---------- звонки: policy-routing для tproxy ----------
+#
+# tproxy отдаёт пакет локальному сокету, но ядро довезёт его туда только если
+# помеченный пакет уходит в таблицу с локальным маршрутом. Правило и маршрут
+# живут в памяти, поэтому восстанавливаются при каждом подъёме интерфейса.
+setup_calls() {
+  [ "$CALLS_ENABLE" = 1 ] || { rm -f /etc/hotplug.d/iface/99-kit-tproxy; return 0; }
+  if ! lsmod 2>/dev/null | grep -q nft_tproxy; then
+    apk add kmod-nft-tproxy >/dev/null 2>&1 || opkg install kmod-nft-tproxy >/dev/null 2>&1 || true
+  fi
+  mkdir -p /etc/hotplug.d/iface
+  cat > /etc/hotplug.d/iface/99-kit-tproxy <<EOF
+#!/bin/sh
+# генерируется netkit. Метка $TPROXY_MARK -> таблица $TPROXY_TABLE с локальным
+# маршрутом: без этого tproxy молча роняет пакеты.
+[ "\$ACTION" = ifup ] || exit 0
+ip rule show | grep -q "fwmark $TPROXY_MARK lookup $TPROXY_TABLE" || \
+  ip rule add fwmark $TPROXY_MARK lookup $TPROXY_TABLE
+ip route replace local 0.0.0.0/0 dev lo table $TPROXY_TABLE
+EOF
+  chmod +x /etc/hotplug.d/iface/99-kit-tproxy
+  ip rule show | grep -q "fwmark $TPROXY_MARK lookup $TPROXY_TABLE" || \
+    ip rule add fwmark "$TPROXY_MARK" lookup "$TPROXY_TABLE"
+  ip route replace local 0.0.0.0/0 dev lo table "$TPROXY_TABLE"
+  ok "звонки: tproxy на :$TPROXY_PORT, метка $TPROXY_MARK -> таблица $TPROXY_TABLE"
 }
 
 # ---------- https-dns-proxy: 1-2 чистых зарубежных DoH-резолвера ----------
@@ -535,10 +611,10 @@ done < "\$tmpd" > "\$tmpc"
 # conf-dir целиком, без фильтра по расширению: geoblock.conf.bak рядом с
 # geoblock.conf — это не бэкап, а второй живой список, который тихо
 # подмешивается к первому. Ловил на живом роутере.
-[ -f "\$OUT" ] && cp "\$OUT" /tmp/geoblock.conf.bak
+[ -f "\$OUT" ] && cp "\$OUT" /tmp/telegram-cidr.list.bak
 # Подмена через файл в той же папке и mv: mv атомарен, а mv из /tmp — это
 # копирование через границу файловых систем, и обрыв питания оставит обрубок.
-gtmp="\$(dirname "\$OUT")/.geoblock.tmp"
+gtmp="\$(dirname "\$OUT")/.telegram-cidr.tmp"
 if cp "\$tmpc" "\$gtmp"; then
   rm -f "\$tmpc"; mv "\$gtmp" "\$OUT"
 else
@@ -649,38 +725,25 @@ tmpc=\$(mktemp)
 # conf-dir целиком, без фильтра по расширению: geoblock.conf.bak рядом с
 # geoblock.conf — это не бэкап, а второй живой список, который тихо
 # подмешивается к первому. Ловил на живом роутере.
-[ -f "\$OUT" ] && cp "\$OUT" /tmp/geoblock.conf.bak
+[ -f "\$OUT" ] && cp "\$OUT" /tmp/telegram-cidr.list.bak
 # Подмена через файл в той же папке и mv: mv атомарен, а mv из /tmp — это
 # копирование через границу файловых систем, и обрыв питания оставит обрубок.
-gtmp="\$(dirname "\$OUT")/.geoblock.tmp"
+gtmp="\$(dirname "\$OUT")/.telegram-cidr.tmp"
 if cp "\$tmpc" "\$gtmp"; then
   rm -f "\$tmpc"; mv "\$gtmp" "\$OUT"
 else
   log "не смог записать \$OUT (места на флеше нет?) — оставляю прежний список"
   rm -f "\$gtmp" "\$tmpc"; exit 1
 fi
-tmpn=\$(mktemp)
-{
-  echo "# генерируется netkit — правь config/telegram-cidr.list, не тут"
-  echo "set proxy4 { type ipv4_addr; flags interval; auto-merge;"
-  v4=\$(grep -v '^#' "\$OUT" | grep -F . | grep -v : | paste -sd, -)
-  [ -n "\$v4" ] && echo "  elements = { \$v4 };"
-  echo "}"
-  echo "set proxy6 { type ipv6_addr; flags interval; auto-merge;"
-  v6=\$(grep -v '^#' "\$OUT" | grep -F : | paste -sd, -)
-  [ -n "\$v6" ] && echo "  elements = { \$v6 };"
-  echo "}"
-  echo "chain proxy_redirect {"
-  echo "  type nat hook prerouting priority -1; policy accept;"
-  echo "  iifname \\"\$LANIF\\" ip  daddr @proxy4 tcp dport {80,443} redirect to :\$RPORT"
-  echo "  iifname \\"\$LANIF\\" ip6 daddr @proxy6 tcp dport {80,443} redirect to :\$RPORT"
-  echo "}"
-} > "\$tmpn"
-mv "\$tmpn" "\$NFTF"
+/usr/sbin/kit-nft-gen
 if fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1; then
   log "Telegram CIDR обновлён: v4=\$v4n записей"
 else
-  log "firewall reload не прошёл — откат"; [ -f "\$OUT.bak" ] && mv "\$OUT.bak" "\$OUT" || true
+  # Откат берётся из /tmp: рядом с конфигом копию класть нельзя, dnsmasq
+  # читает папку целиком и подхватил бы её как второй живой список.
+  log "firewall reload не прошёл — откат"
+  [ -f /tmp/telegram-cidr.list.bak ] && cp /tmp/telegram-cidr.list.bak "\$OUT" || true
+  /usr/sbin/kit-nft-gen || true
   fw4 reload >/dev/null 2>&1 || true
   exit 1
 fi
@@ -713,7 +776,7 @@ deploy_scripts() {
 # =================== КОМАНДЫ ===================
 cmd_install() {
   ensure_deps || { err "останавливаюсь — сначала почини зависимости"; return 1; }
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy; fi
   gen_quic
   gen_ipv6
   deploy_scripts
@@ -723,7 +786,7 @@ cmd_install() {
   echo; say "готово. проверь: netctl status  и  netctl doctor"
 }
 cmd_apply() {
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; gen_doh; gen_dns; restart_proxy; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy; fi
   gen_quic
   gen_ipv6
   deploy_scripts
@@ -894,7 +957,7 @@ cmd_info() {
 
 cmd_proxy() {
   case "${1:-}" in
-    on)  PROXY_ENABLE=1; gen_singbox; gen_nft; gen_doh; gen_dns; restart_proxy;;
+    on)  PROXY_ENABLE=1; gen_singbox; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy;;
     off) /etc/init.d/sing-box stop 2>/dev/null; /etc/init.d/sing-box disable 2>/dev/null
          rm -f "$NFT"; fw4 reload >/dev/null 2>&1 || true; ok "прокси выключен (zapret не тронут)";;
     *) err "proxy: on | off";;
