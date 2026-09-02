@@ -250,8 +250,11 @@ tmp="\$(dirname "\$OUT")/.20-proxy.tmp"
   if [ "\$CALLS" = 1 ]; then
     echo "chain tg_tproxy {"
     echo "  type filter hook prerouting priority mangle; policy accept;"
-    echo "  iifname \"\$LANIF\" ip  daddr @tg4 meta l4proto udp tproxy to :\$TPORT meta mark set \$MARK accept"
-    echo "  iifname \"\$LANIF\" ip6 daddr @tg6 meta l4proto udp tproxy to :\$TPORT meta mark set \$MARK accept"
+    # В семействе inet у tproxy обязателен указатель семейства адресов
+    # («tproxy ip to», не «tproxy to»): без него nft молча не грузит правило,
+    # и цепочка остаётся пустой — ловилось на живом роутере.
+    echo "  iifname \"\$LANIF\" ip  daddr @tg4 meta l4proto udp tproxy ip  to :\$TPORT meta mark set \$MARK accept"
+    echo "  iifname \"\$LANIF\" ip6 daddr @tg6 meta l4proto udp tproxy ip6 to :\$TPORT meta mark set \$MARK accept"
     echo "}"
   fi
 } > "\$tmp"

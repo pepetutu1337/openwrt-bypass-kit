@@ -132,10 +132,10 @@ fi
 # открытый 53 рядом с DoH: в самом split-ru.conf было честно написано
 # «через DoH», а запросы шли обоими путями, и dnsmasq выбирал быстрый.
 # Проверять сам файл поэтому мало — надо смотреть всю папку.
-stray=$(ls /etc/dnsmasq.d 2>/dev/null | grep -vE '\.conf$')
+stray=$(ls /etc/dnsmasq.d 2>/dev/null | grep -vE "\.conf$")
 if [ -n "$stray" ]; then
   echo "  ! в /etc/dnsmasq.d лежит лишнее — dnsmasq читает это как конфиг:"
-  echo "$stray" | sed 's/^/      /'
+  echo "$stray" | sed "s/^/      /" 
   echo "      убрать: rm /etc/dnsmasq.d/<файл> && /etc/init.d/dnsmasq restart"
 fi
 rip=$(nslookup www.vtb.ru 127.0.0.1 2>/dev/null | awk "/^Address/{print \$NF}" | grep -v "#" | grep "\." | tail -1)
@@ -715,6 +715,11 @@ if [ -z "$new4" ] && [ -z "$new6" ]; then echo "✓ уже актуально, �
   echo "# rctl telegram-cidr update $(date +%F), офиц. список $URL — доп.элементы, base-файл не менялся"
   [ -n "$new4" ] && printf "add element inet fw4 proxy4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | paste -sd, -)"
   [ -n "$new6" ] && printf "add element inet fw4 proxy6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | paste -sd, -)"
+  # Набор tg4/tg6 отдельный: по нему голос звонков уходит в tproxy. Без этой
+  # строки новые сети Telegram попадали бы только в proxy4 (там TCP), и
+  # разговор на них шёл бы мимо ноды.
+  nft list set inet fw4 tg4 >/dev/null 2>&1 && [ -n "$new4" ] && printf "add element inet fw4 tg4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | paste -sd, -)"
+  nft list set inet fw4 tg6 >/dev/null 2>&1 && [ -n "$new6" ] && printf "add element inet fw4 tg6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | paste -sd, -)"
 } >> "$EXTRA"
 if nft -f "$EXTRA" 2>/tmp/nft-tgcidr.err; then
   echo "✓ применено сразу + сохранено в $EXTRA (переживёт fw4 reload/ребут, $BASE не тронут)"
@@ -723,6 +728,44 @@ else
   echo "✗ nft отверг новые элементы (см. ниже) — $EXTRA всё равно дополнен, проверь руками:"
   cat /tmp/nft-tgcidr.err
 fi
+'
+
+# звонки Telegram: голос — UDP, redirect ловит только TCP, поэтому UDP на
+# адреса Telegram заворачивается в tproxy-инбаунд sing-box.
+R_CALLS_STATUS='
+ok=1
+if nft list chain inet fw4 tg_tproxy 2>/dev/null | grep -q tproxy; then
+  echo "✓ правило tproxy на месте (UDP на сети Telegram уходит в ноду)"
+else
+  echo "✗ нет правила tproxy — голос идёт напрямую"; ok=0
+fi
+if ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 100"; then
+  echo "✓ метка 1 -> таблица 100"
+else
+  echo "✗ нет правила маршрутизации по метке — tproxy молча роняет пакеты"; ok=0
+fi
+if ip route show table 100 2>/dev/null | grep -q "local default"; then
+  echo "✓ локальный маршрут в таблице 100"
+else
+  echo "✗ нет локального маршрута в таблице 100"; ok=0
+fi
+if netstat -lnup 2>/dev/null | grep -q ":1101 "; then
+  echo "✓ sing-box слушает tproxy :1101"
+else
+  echo "✗ sing-box не слушает :1101 — нет tproxy-инбаунда в конфиге"; ok=0
+fi
+lsmod 2>/dev/null | grep -q nft_tproxy && echo "✓ модуль ядра nft_tproxy загружен" || { echo "! модуль nft_tproxy не загружен (apk add kmod-nft-tproxy)"; ok=0; }
+n=$(nft list chain inet fw4 tg_tproxy 2>/dev/null | sed -n "s/.*packets \([0-9]*\).*/\1/p" | head -1)
+[ -n "$n" ] && echo "  через tproxy прошло пакетов: $n"
+[ "$ok" = 1 ] && echo "звонки: путь собран" || echo "звонки: путь неполон — rctl calls fix"
+'
+R_CALLS_FIX='
+[ -f /etc/hotplug.d/iface/99-kit-tproxy ] && ACTION=ifup sh /etc/hotplug.d/iface/99-kit-tproxy
+lsmod 2>/dev/null | grep -q nft_tproxy || apk add kmod-nft-tproxy 2>&1 | tail -1
+nft list chain inet fw4 tg_tproxy 2>/dev/null | grep -q tproxy || fw4 reload >/dev/null 2>&1
+netstat -lnup 2>/dev/null | grep -q ":1101 " || /etc/init.d/sing-box restart >/dev/null 2>&1
+sleep 2
+echo ":: после починки:"
 '
 
 # sysupgrade-бэкап конфигов (НЕ прошивка!) — путь выводится последней строкой,
@@ -979,6 +1022,12 @@ case "$cmd" in
     esac ;;
   geoblock)
     case "${1:-count}" in update) remote "$R_GEO_UPDATE" ;; count) remote "$R_GEO_COUNT" ;; list) remote "$R_GEO_LIST" ;; *) echo "geoblock update|count|list"; exit 1;; esac ;;
+  calls)
+    case "${1:-status}" in
+      status) remote "$R_CALLS_STATUS" ;;
+      fix)    remote "$R_CALLS_FIX"; remote "$R_CALLS_STATUS" ;;
+      *) echo "calls status|fix"; exit 1;;
+    esac ;;
   telegram-cidr)
     case "${1:-count}" in update) remote "$R_TGCIDR_UPDATE" ;; count) remote "$R_TGCIDR_COUNT" ;; *) echo "telegram-cidr update|count"; exit 1;; esac ;;
   tune)     # подбор стратегии zapret; сам скрипт лежит на роутере
@@ -1094,6 +1143,7 @@ rctl — пульт к твоему живому роутеру ($ROUTER_IP).
   rctl domains scout [СЕК] [IP|-]   разведка: какие ещё домены нужны сайту (открой сайт, пока идёт)
   rctl domains check ДОМЕН    разбор: заведён ли, куда резолвится, идёт ли в прокси
   rctl geoblock update|count|list        авто-список ушедших из РФ (list = все домены)
+  rctl calls [status|fix]                звонки Telegram: цел ли путь голоса (UDP -> tproxy -> нода)
   rctl telegram-cidr update|count        офиц. CIDR Telegram (core.telegram.org), доп.файл, база не трогается
   rctl backup                 sysupgrade-бэкап конфигов (НЕ прошивка), путь во вывод — тянуть через панель/scp
   rctl info                  система: модель, прошивка, аптайм, WAN, версии
