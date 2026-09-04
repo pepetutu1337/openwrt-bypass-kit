@@ -550,10 +550,28 @@ zapret_apply() {
 # ---------- сервисы прокси-стека ----------
 restart_proxy() {
   [ "$PROXY_ENABLE" = 1 ] || { /etc/init.d/sing-box stop 2>/dev/null || true; return 0; }
+  # Пакет sing-box приезжает выключенным (enabled '0') и с юзером sing-box.
+  # Его init при enabled=0 выходит с кодом 0, ничего не запустив, — то есть
+  # без этих трёх строк «sing-box перезапущен» печаталось бы над мёртвым
+  # ядром. Юзер нужен root: tproxy-инбаунд требует CAP_NET_ADMIN, а
+  # auto_detect_interface — CAP_NET_RAW, под непривилегированным ядро не
+  # поднимается.
+  uci -q set sing-box.main.enabled='1'
+  uci -q set sing-box.main.user='root'
+  uci -q set sing-box.main.conffile="$SBOX"
+  uci -q commit sing-box
   /etc/init.d/sing-box enable 2>/dev/null || true
   /etc/init.d/sing-box restart
+  sleep 2
+  if pgrep -x sing-box >/dev/null 2>&1; then
+    ok "sing-box перезапущен"
+  else
+    err "sing-box не поднялся — последние строки журнала:"
+    logread -e sing-box 2>/dev/null | tail -5
+    return 1
+  fi
   fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
-  ok "sing-box перезапущен, firewall перезагружен"
+  ok "firewall перезагружен"
 }
 
 # ---------- geoblock: авто-список ушедших из РФ сервисов ----------
@@ -904,7 +922,7 @@ deploy_scripts() {
 # =================== КОМАНДЫ ===================
 cmd_install() {
   ensure_deps || { err "останавливаюсь — сначала почини зависимости"; return 1; }
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy || return 1; fi
   gen_quic
   gen_ipv6
   deploy_scripts
@@ -917,7 +935,7 @@ cmd_install() {
   echo; say "готово. проверь: netctl status  и  netctl doctor"
 }
 cmd_apply() {
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy || return 1; fi
   gen_quic
   gen_ipv6
   deploy_scripts
