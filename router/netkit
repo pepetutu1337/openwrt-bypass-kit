@@ -347,7 +347,15 @@ gen_doh() {
     _doh_instance "$RU_DOH_PORT" "$RU_DOH_UPSTREAM" "$RU_DNS,${RU_DNS2:-$RU_DNS}"
     msg="$msg + 127.0.0.1:$RU_DOH_PORT ($RU_DOH_UPSTREAM, РФ-зоны)"
   fi
-  uci -q set https-dns-proxy.config.update_dnsmasq_config='-'  # не перехватывать весь DNS сами
+  # Опцию переименовали (update_dnsmasq_config -> dnsmasq_config_update), и
+  # uci-defaults пакета мигрирует её только один раз, при установке. Кит
+  # пишет настройку ПОСЛЕ, так что старое имя просто оседает мёртвым ключом,
+  # а действует умолчание '*': https-dns-proxy переписывает список апстримов
+  # dnsmasq под себя при каждом старте и сносит весь сплит DNS — российский
+  # инстанс уезжает в глобальные апстримы, апстрим через ноду затирается.
+  # Пишем оба имени: лишнее на своей версии безвредно.
+  uci -q set https-dns-proxy.config.dnsmasq_config_update='-'  # не перехватывать весь DNS сами
+  uci -q set https-dns-proxy.config.update_dnsmasq_config='-'  # имя до переименования
   uci -q set https-dns-proxy.config.force_dns='0'
   uci commit https-dns-proxy
   /etc/init.d/https-dns-proxy enable 2>/dev/null || true
