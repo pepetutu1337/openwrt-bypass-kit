@@ -626,10 +626,10 @@ done < "\$tmpd" > "\$tmpc"
 # conf-dir целиком, без фильтра по расширению: geoblock.conf.bak рядом с
 # geoblock.conf — это не бэкап, а второй живой список, который тихо
 # подмешивается к первому. Ловил на живом роутере.
-[ -f "\$OUT" ] && cp "\$OUT" /tmp/telegram-cidr.list.bak
+[ -f "\$OUT" ] && cp "\$OUT" /tmp/geoblock.conf.bak
 # Подмена через файл в той же папке и mv: mv атомарен, а mv из /tmp — это
 # копирование через границу файловых систем, и обрыв питания оставит обрубок.
-gtmp="\$(dirname "\$OUT")/.telegram-cidr.tmp"
+gtmp="\$(dirname "\$OUT")/.geoblock.conf.tmp"
 if cp "\$tmpc" "\$gtmp"; then
   rm -f "\$tmpc"; mv "\$gtmp" "\$OUT"
 else
