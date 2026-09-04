@@ -713,13 +713,13 @@ new6=$(grep -E "^[0-9a-fA-F:]+/[0-9]{1,3}$" "$TMP" | while IFS= read -r c; do pr
 if [ -z "$new4" ] && [ -z "$new6" ]; then echo "✓ уже актуально, новых CIDR нет"; exit 0; fi
 {
   echo "# rctl telegram-cidr update $(date +%F), офиц. список $URL — доп.элементы, base-файл не менялся"
-  [ -n "$new4" ] && printf "add element inet fw4 proxy4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | paste -sd, -)"
-  [ -n "$new6" ] && printf "add element inet fw4 proxy6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | paste -sd, -)"
+  [ -n "$new4" ] && printf "add element inet fw4 proxy4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$new6" ] && printf "add element inet fw4 proxy6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | tr '\n' ',' | sed 's/,$//')"
   # Набор tg4/tg6 отдельный: по нему голос звонков уходит в tproxy. Без этой
   # строки новые сети Telegram попадали бы только в proxy4 (там TCP), и
   # разговор на них шёл бы мимо ноды.
-  nft list set inet fw4 tg4 >/dev/null 2>&1 && [ -n "$new4" ] && printf "add element inet fw4 tg4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | paste -sd, -)"
-  nft list set inet fw4 tg6 >/dev/null 2>&1 && [ -n "$new6" ] && printf "add element inet fw4 tg6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | paste -sd, -)"
+  nft list set inet fw4 tg4 >/dev/null 2>&1 && [ -n "$new4" ] && printf "add element inet fw4 tg4 { %s }\n" "$(printf "%s\n" "$new4" | grep . | tr '\n' ',' | sed 's/,$//')"
+  nft list set inet fw4 tg6 >/dev/null 2>&1 && [ -n "$new6" ] && printf "add element inet fw4 tg6 { %s }\n" "$(printf "%s\n" "$new6" | grep . | tr '\n' ',' | sed 's/,$//')"
 } >> "$EXTRA"
 if nft -f "$EXTRA" 2>/tmp/nft-tgcidr.err; then
   echo "✓ применено сразу + сохранено в $EXTRA (переживёт fw4 reload/ребут, $BASE не тронут)"

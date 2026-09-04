@@ -235,8 +235,13 @@ CALLS="$CALLS_ENABLE"
 TPORT="$TPROXY_PORT"
 MARK="$TPROXY_MARK"
 lines() { grep -v '^#' "\$1" 2>/dev/null | sed 's/[[:space:]]*\$//' | grep -v '^\$' || true; }
-v4=\$(lines "\$LIST" | grep -F . | grep -v : | paste -sd, - || true)
-v6=\$(lines "\$LIST" | grep -F : | paste -sd, - || true)
+# Склейка через tr, а не paste: paste в стоковой busybox не собран
+# (BUSYBOX_DEFAULT_PASTE=n), и на чистом роутере его просто нет. Раньше
+# «paste: not found» гасился через || true, наборы tg4/tg6 оставались
+# пустыми, и Telegram — который ходит по IP, а не по домену — навсегда шёл
+# мимо ноды. Снаружи выглядело как «работает всё, кроме телеги».
+v4=\$(lines "\$LIST" | grep -F . | grep -v : | tr '\n' ',' || true); v4=\${v4%,}
+v6=\$(lines "\$LIST" | grep -F : | tr '\n' ',' || true); v6=\${v6%,}
 tmp="\$(dirname "\$OUT")/.20-proxy.tmp"
 {
   echo "# генерируется netkit (kit-nft-gen) — правь config/telegram-cidr.list, не тут"
