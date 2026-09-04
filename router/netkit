@@ -56,7 +56,12 @@ DNSD=/etc/dnsmasq.d/netkit.conf
 SPLITD=/etc/dnsmasq.d/split-ru.conf
 GEOBLOCKD=/etc/dnsmasq.d/geoblock.conf
 MARKD=/etc/dnsmasq.d/netkit-mark.conf
-SOCKS_DIAG=10800; CLASH=127.0.0.1:9090; CLASH_PORT=9090
+# 1180, а не что попало: в этот порт стучится весь панельный слой —
+# svcprobe, proxy-watchdog, rctl и бот. Пока кит поднимал socks на 10800,
+# на собранном им роутере они все ходили в закрытый порт: наружу это
+# выглядело как «нода не отвечает», а svcprobe из крона каждые пять минут
+# перебирал ноды, леча несуществующую поломку.
+SOCKS_DIAG=${SINGBOX_SOCKS_PORT:-1180}; CLASH=127.0.0.1:9090; CLASH_PORT=9090
 
 say()  { printf '\033[1;36m::\033[0m %s\n' "$*"; }
 ok()   { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
