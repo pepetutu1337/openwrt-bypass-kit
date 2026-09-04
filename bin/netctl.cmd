@@ -40,6 +40,7 @@ if /i "%CMD%"=="meta"    ( %SSH% "netkit meta"            & goto :eof )
 if /i "%CMD%"=="logs"    ( %SSH% "netkit logs %ARGS%"     & goto :eof )
 if /i "%CMD%"=="domains" ( %SSH% "netkit domains %ARGS%"  & goto :eof )
 if /i "%CMD%"=="nodes"   ( %SSH% "netkit nodes %ARGS%"    & goto :eof )
+if /i "%CMD%"=="subs"    ( %SSH% "netkit subs %ARGS%"     & goto :eof )
 if /i "%CMD%"=="zapret"  ( %SSH% "netkit zapret %ARGS%"   & goto :eof )
 if /i "%CMD%"=="proxy"   ( %SSH% "netkit proxy %ARGS%"    & goto :eof )
 if /i "%CMD%"=="geoblock" ( %SSH% "netkit geoblock %ARGS%" & goto :eof )
@@ -55,6 +56,7 @@ echo   netctl status             состояние сервисов
 echo   netctl doctor [домен]     полный чекап
 echo   netctl domains list ^| add D... ^| rm D...
 echo   netctl nodes   list ^| test ^| use N
+echo   netctl subs    list ^| add URL ^| rm URL ^| revive URL ^| bank  (нужен SUB_ENABLE="1")
 echo   netctl zapret  on ^| off ^| check
 echo   netctl proxy   on ^| off
 echo   netctl geoblock update ^| on ^| off ^| count
