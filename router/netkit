@@ -38,6 +38,18 @@ CFG=/etc/netkit
 : "${CALLS_ENABLE:=1}"; : "${TPROXY_PORT:=1101}"; : "${TPROXY_MARK:=1}"; : "${TPROXY_TABLE:=100}"
 : "${TELEGRAM_CIDR_AUTOUPDATE:=1}"; : "${TELEGRAM_CIDR_CRON:=30 4 * * 0}"
 : "${TELEGRAM_CIDR_URL:=https://core.telegram.org/resources/cidr.txt}"
+# --- обновление подписок через netpult (несколько ссылок, банк живых нод,
+#     дистанционный канал: бот + запечатанный манифест). Вся секция за
+#     SUB_ENABLE; без неё ноды правятся только руками через nodes.list.
+: "${SUB_ENABLE:=0}"
+: "${NETPULT_VERSION:=v0.5.0}"
+: "${SUB_UPDATE_CRON:=45 4 * * *}"     # полный refresh: перечитать все подписки + sync
+: "${SUB_POLL_CRON:=*/7 * * * *}"      # забор новых ссылок из бота/манифеста
+: "${SUB_BOT_TOKEN:=}"                 # токен Telegram-бота (пусто = бот выключен)
+: "${SUB_BOT_CHAT:=}"                  # твой chat_id — команды слушаются только оттуда
+: "${SUB_MANIFEST_URL:=}"             # URL запечатанного манифеста (гист/pastebin/свой VPS)
+: "${SUB_HMAC_KEY:=}"                  # общий секрет: шифр и подпись манифеста
+NETPULT_DIR=/etc/netkit/netpult       # XDG_DATA_HOME: список подписок, банк, offset бота
 SBOX=/etc/sing-box/config.json
 NFT=/etc/nftables.d/20-proxy.nft
 DNSD=/etc/dnsmasq.d/netkit.conf
@@ -763,6 +775,99 @@ cron_line() {  # $1=команда $2=расписание $3=вкл(1/0)
   /etc/init.d/cron enable 2>/dev/null || true; /etc/init.d/cron restart 2>/dev/null || true
 }
 
+# ---------- netpult: бинарь для обновления подписок ----------
+# Скачивает статический бинарь из релиза netpult и кладёт в /usr/sbin/netpult.
+# GitHub из РФ отдаёт нестабильно — те же зеркала, что и в get.sh.
+sub_fetch() {  # $1=url $2=out ; 0 при успехе
+  for m in ${KIT_MIRROR:-} "" https://gh-proxy.com/ https://ghfast.top/; do
+    curl -fsL --connect-timeout 8 --max-time 180 --speed-time 25 --speed-limit 1024 \
+      -o "$2" "$m$1" && return 0
+  done
+  return 1
+}
+
+deploy_netpult() {
+  arch=$(uname -m)
+  case "$arch" in
+    aarch64|arm64) asset=netpult-linux-aarch64.tar.gz ;;
+    x86_64)        asset=netpult-linux-x86_64.tar.gz ;;
+    *) warn "netpult: нет сборки под $arch — подписки через пульт недоступны"; return 1 ;;
+  esac
+  have=$(/usr/sbin/netpult version 2>/dev/null | head -1)
+  # Уже нужная версия — не качаем многомегабайтный tarball на каждый apply.
+  case "$have" in
+    *"${NETPULT_VERSION#v}"*) mkdir -p "$NETPULT_DIR"; ok "netpult: $have (актуален)"; return 0 ;;
+  esac
+  base="https://github.com/pepetutu1337/netpult/releases/download/${NETPULT_VERSION}"
+
+  tmp=$(mktemp -d) || return 1
+  if ! sub_fetch "$base/$asset" "$tmp/n.tgz"; then
+    rm -rf "$tmp"
+    [ -x /usr/sbin/netpult ] && { warn "netpult ${NETPULT_VERSION} не скачался — оставляю установленный ($have)"; return 0; }
+    err "netpult не скачался — подписки не заработают"; return 1
+  fi
+  # sha256 проверяем, если он приложен к релизу; нет — ставим без проверки.
+  if sub_fetch "$base/$asset.sha256" "$tmp/n.sha" 2>/dev/null; then
+    want=$(awk '{print $1; exit}' "$tmp/n.sha")
+    got=$(sha256sum "$tmp/n.tgz" | awk '{print $1}')
+    [ "$want" = "$got" ] || { err "netpult: sha256 не сошёлся, не ставлю"; rm -rf "$tmp"; return 1; }
+  else
+    warn "netpult: контрольная сумма недоступна, ставлю без проверки"
+  fi
+  tar xzf "$tmp/n.tgz" -C "$tmp" || { err "netpult: архив не распаковался"; rm -rf "$tmp"; return 1; }
+  [ -f "$tmp/netpult" ] || { err "netpult: в архиве нет бинаря"; rm -rf "$tmp"; return 1; }
+  mv "$tmp/netpult" /usr/sbin/netpult || { err "netpult: не встал в /usr/sbin (места на флеше нет?)"; rm -rf "$tmp"; return 1; }
+  chmod 755 /usr/sbin/netpult
+  rm -rf "$tmp"
+  mkdir -p "$NETPULT_DIR"
+  new=$(/usr/sbin/netpult version 2>/dev/null | head -1)
+  ok "netpult: ${new:-установлен}"
+}
+
+# ---------- обновление подписок: два крон-скрипта ----------
+# sub-update — полный refresh раз в сутки (перечитать подписки, свести с
+#   банком, пересобрать конфиг ядра с проверкой и откатом).
+# sub-poll   — раз в несколько минут: только забрать новые ссылки из бота и
+#   манифеста; netpult рестартит ядро лишь при реальном изменении списка.
+# Секреты (токен, chat_id, ключ) скрипт читает из kit.conf при запуске —
+# не вписываем в текст скрипта: одинарная кавычка в ключе иначе ломает его,
+# и секрет не дублируется во второй файл.
+deploy_sub_scripts() {
+  socks="socks5h://127.0.0.1:${SOCKS_DIAG}"
+
+  cat > /usr/sbin/sub-update <<EOF
+#!/bin/sh
+# генерируется netkit. Полный refresh подписок раз в сутки.
+. /etc/netkit/kit.conf
+export XDG_DATA_HOME="${NETPULT_DIR}"
+export NETPULT_BOT_TOKEN="\$SUB_BOT_TOKEN" NETPULT_BOT_CHAT="\$SUB_BOT_CHAT" NETPULT_SUB_KEY="\$SUB_HMAC_KEY"
+/usr/sbin/netpult vpn sync --config ${SBOX} --proxy ${socks} \\
+  --restart /etc/init.d/sing-box restart 2>&1 | logger -t sub-update
+EOF
+  chmod 700 /usr/sbin/sub-update
+
+  cat > /usr/sbin/sub-poll <<EOF
+#!/bin/sh
+# генерируется netkit. Забор новых ссылок из бота и манифеста; изменился
+# список — тот же sync применяется сразу.
+. /etc/netkit/kit.conf
+export XDG_DATA_HOME="${NETPULT_DIR}"
+export NETPULT_BOT_TOKEN="\$SUB_BOT_TOKEN" NETPULT_BOT_CHAT="\$SUB_BOT_CHAT" NETPULT_SUB_KEY="\$SUB_HMAC_KEY"
+/usr/sbin/netpult vpn subs poll \${SUB_MANIFEST_URL:+--manifest "\$SUB_MANIFEST_URL"} \\
+  --then-sync --config ${SBOX} --proxy ${socks} \\
+  --restart /etc/init.d/sing-box restart 2>&1 | logger -t sub-poll
+EOF
+  chmod 700 /usr/sbin/sub-poll
+
+  cron_line "/usr/sbin/sub-update" "$SUB_UPDATE_CRON" 1
+  cron_line "/usr/sbin/sub-poll"   "$SUB_POLL_CRON"   1
+}
+
+sub_disable_cron() {
+  cron_line "/usr/sbin/sub-update" "$SUB_UPDATE_CRON" 0
+  cron_line "/usr/sbin/sub-poll"   "$SUB_POLL_CRON"   0
+}
+
 deploy_scripts() {
   deploy_geoblock; ok "geoblock-update развёрнут (крон: ${GEOBLOCK_CRON})"
   # Здесь стояло `[ "$PROXY_ENABLE" = 1 ] && { ... }` последней строкой функции.
@@ -772,6 +877,16 @@ deploy_scripts() {
   if [ "$PROXY_ENABLE" = 1 ]; then
     deploy_watchdog; ok "proxy-watchdog развёрнут (крон: ${WATCHDOG_CRON})"
     deploy_telegram_cidr; ok "telegram-cidr-update развёрнут (крон: ${TELEGRAM_CIDR_CRON}, вкл=${TELEGRAM_CIDR_AUTOUPDATE})"
+    if [ "$SUB_ENABLE" = 1 ]; then
+      if deploy_netpult; then
+        deploy_sub_scripts
+        ok "подписки: sub-update (${SUB_UPDATE_CRON}), sub-poll (${SUB_POLL_CRON})"
+      else
+        warn "подписки не развёрнуты — netpult не встал"
+      fi
+    elif grep -q '/usr/sbin/sub-update\|/usr/sbin/sub-poll' /etc/crontabs/root 2>/dev/null; then
+      sub_disable_cron; ok "подписки выключены (SUB_ENABLE=0) — кроны сняты"
+    fi
   fi
   return 0
 }
@@ -784,6 +899,9 @@ cmd_install() {
   gen_ipv6
   deploy_scripts
   [ "$GEOBLOCK_ENABLE" = 1 ] && { say "тяну geoblock-список (первый раз)"; /usr/sbin/geoblock-update || warn "geoblock не скачался, попробуй позже: netctl geoblock update"; }
+  if [ "$PROXY_ENABLE" = 1 ] && [ "$SUB_ENABLE" = 1 ] && [ -x /usr/sbin/sub-update ]; then
+    say "первое обновление подписок"; /usr/sbin/sub-update || warn "sub-update не прошёл — повторится по крону"
+  fi
   [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
   fw4 reload >/dev/null 2>&1 || true
   echo; say "готово. проверь: netctl status  и  netctl doctor"
@@ -793,6 +911,11 @@ cmd_apply() {
   gen_quic
   gen_ipv6
   deploy_scripts
+  # gen_singbox пересобрал конфиг из nodes.list — ноды из подписок с него
+  # слетели. Возвращаем их сразу, не дожидаясь суточного крона.
+  if [ "$PROXY_ENABLE" = 1 ] && [ "$SUB_ENABLE" = 1 ] && [ -x /usr/sbin/sub-update ]; then
+    say "подтягиваю подписки"; /usr/sbin/sub-update || warn "sub-update не прошёл — повторится по крону"
+  fi
   [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
   fw4 reload >/dev/null 2>&1 || true
   say "применено."
@@ -866,6 +989,51 @@ cmd_nodes() {
       _clash_switch "node$n" && ok "закреплена node$n" || err "не вышло (sing-box запущен? нода есть?)"
       ;;
     *) err "nodes: list | test | use <N>";;
+  esac
+}
+
+# ---------- подписки (несколько ссылок, банк, дистанционный канал) ----------
+# Тонкая обёртка над netpult: сам список, банк и каналы живут в нём, netkit
+# только даёт единый вход и применяет изменения к живому конфигу ядра.
+_netpult() {
+  [ -x /usr/sbin/netpult ] || { err "netpult не установлен — SUB_ENABLE=1 и netctl install"; return 1; }
+  XDG_DATA_HOME="$NETPULT_DIR" NETPULT_SUB_KEY="$SUB_HMAC_KEY" \
+  NETPULT_BOT_TOKEN="$SUB_BOT_TOKEN" NETPULT_BOT_CHAT="$SUB_BOT_CHAT" \
+    /usr/sbin/netpult "$@"
+}
+
+cmd_subs() {
+  act="${1:-list}"; shift 2>/dev/null || true
+  case "$act" in
+    list|"") _netpult vpn subs list ;;
+    bank)    _netpult vpn bank list ;;
+    add)
+      [ $# -gt 0 ] || { err "netkit subs add <url>"; return 1; }
+      _netpult vpn subs add "$@" || return 1
+      # ссылка уже в netpult; неудача применения не должна ронять команду
+      [ -x /usr/sbin/sub-update ] && { /usr/sbin/sub-update || warn "применить не вышло — повторится по крону"; }
+      return 0
+      ;;
+    rm|del|forget)
+      [ $# -gt 0 ] || { err "netkit subs rm <url>"; return 1; }
+      _netpult vpn subs rm "$@"
+      ;;
+    revive)
+      [ $# -gt 0 ] || { err "netkit subs revive <url>"; return 1; }
+      _netpult vpn subs revive "$@" || return 1
+      [ -x /usr/sbin/sub-update ] && { /usr/sbin/sub-update || warn "применить не вышло — повторится по крону"; }
+      return 0
+      ;;
+    update)
+      [ -x /usr/sbin/sub-update ] || { err "sub-update не развёрнут (нужен SUB_ENABLE=1 и netctl install)"; return 1; }
+      /usr/sbin/sub-update
+      ;;
+    poll)
+      [ -x /usr/sbin/sub-poll ] || { err "sub-poll не развёрнут (нужен SUB_ENABLE=1 и netctl install)"; return 1; }
+      /usr/sbin/sub-poll
+      ;;
+    log)    logread -e sub-update -e sub-poll | tail -40 ;;
+    *) err "subs: list | add <url> | rm <url> | revive <url> | bank | update | poll | log" ;;
   esac
 }
 
@@ -979,6 +1147,15 @@ cmd_status() {
   c4=$(nft -j list set inet fw4 proxy4 2>/dev/null | jq '[.nftables[].set.elem[]?]|length' 2>/dev/null || echo 0)
   echo "  proxy4: ${c4:-0} элементов"
   say "домены в прокси: $(lines "$CFG/domains.list" | wc -l),  ноды: $(lines "$CFG/nodes.list" | wc -l)"
+  if [ "$SUB_ENABLE" = 1 ] && [ -x /usr/sbin/netpult ]; then
+    # grep -c при нуле совпадений выходит с кодом 1 — под set -e это оборвёт
+    # cmd_status на свежем роутере, поэтому || true в каждой подстановке.
+    subs_out=$(XDG_DATA_HOME="$NETPULT_DIR" /usr/sbin/netpult vpn subs list 2>/dev/null || true)
+    n=$(printf '%s\n' "$subs_out" | grep -c '●' || true)
+    r=$(printf '%s\n' "$subs_out" | grep -c '○' || true)
+    b=$(XDG_DATA_HOME="$NETPULT_DIR" /usr/sbin/netpult vpn bank list 2>/dev/null | grep -cE '●|○' || true)
+    say "подписки: активных ${n:-0}, в отставке ${r:-0};  банк нод: ${b:-0}"
+  fi
 }
 
 cmd_doctor() {
@@ -1032,6 +1209,16 @@ cmd_doctor() {
   if [ "$TELEGRAM_CIDR_AUTOUPDATE" = 1 ]; then
     grep -q telegram-cidr-update /etc/crontabs/root 2>/dev/null && ok "telegram-cidr-update в кроне" || warn "telegram-cidr-update не в кроне (netkit apply починит)"
   else warn "автообновление telegram-cidr выключено в kit.conf"; fi
+  echo
+  if [ "$SUB_ENABLE" = 1 ]; then
+    say "подписки через netpult"
+    [ -x /usr/sbin/netpult ] && ok "netpult: $(/usr/sbin/netpult version 2>/dev/null | head -1)" || err "netpult не установлен (netctl install)"
+    grep -q '/usr/sbin/sub-update' /etc/crontabs/root 2>/dev/null && ok "sub-update в кроне ($SUB_UPDATE_CRON)" || warn "sub-update не в кроне (netctl apply)"
+    grep -q '/usr/sbin/sub-poll' /etc/crontabs/root 2>/dev/null && ok "sub-poll в кроне ($SUB_POLL_CRON)" || warn "sub-poll не в кроне (netctl apply)"
+    [ -n "$SUB_BOT_TOKEN" ] && [ -n "$SUB_BOT_CHAT" ] && ok "бот настроен" || warn "бот не настроен (SUB_BOT_TOKEN/SUB_BOT_CHAT)"
+    [ -n "$SUB_MANIFEST_URL" ] && [ -n "$SUB_HMAC_KEY" ] && ok "манифест-канал настроен" || warn "манифест-канал не настроен (SUB_MANIFEST_URL/SUB_HMAC_KEY)"
+    XDG_DATA_HOME="$NETPULT_DIR" /usr/sbin/netpult vpn subs list 2>/dev/null | grep -E '●|○' | sed 's/^/  /'
+  fi
 }
 
 cmd_logs() {
@@ -1048,6 +1235,7 @@ case "${1:-}" in
   apply)   cmd_apply;;
   domains) shift; cmd_domains "$@";;
   nodes)   shift; cmd_nodes "$@";;
+  subs)    shift; cmd_subs "$@";;
   zapret)  shift; cmd_zapret "$@";;
   proxy)   shift; cmd_proxy "$@";;
   geoblock) shift; cmd_geoblock "$@";;
@@ -1058,5 +1246,5 @@ case "${1:-}" in
   info)    cmd_info;;
   meta)    cmd_meta;;
   logs)    shift; cmd_logs "$@";;
-  *) echo "netkit: install|apply|status|doctor|info|meta|domains|nodes|zapret|proxy|geoblock|telegram-cidr|backup|logs"; exit 1;;
+  *) echo "netkit: install|apply|status|doctor|info|meta|domains|nodes|subs|zapret|proxy|geoblock|telegram-cidr|backup|logs"; exit 1;;
 esac

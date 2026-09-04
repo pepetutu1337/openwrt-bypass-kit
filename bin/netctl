@@ -109,6 +109,7 @@ case "$cmd" in
     else
       $SSH "netkit nodes $*"
     fi ;;
+  subs)     $SSH "netkit subs $*" ;;
   zapret)   $SSH "netkit zapret $*" ;;
   proxy)    $SSH "netkit proxy $*" ;;
   geoblock) $SSH "netkit geoblock $*" ;;
@@ -140,6 +141,12 @@ netctl — пульт к OpenWrt-киту (обход блокировок).
   netctl nodes use 3        закрепить ноду №3 основной
   netctl nodes add-url 'vless://…'   добавить ноду по ссылке (из Happ «Поделиться»)
   netctl nodes add-json <файл>       добавить ноды из xray-JSON (Happ часто отдаёт JSON)
+
+  netctl subs list|bank             подписки (несколько ссылок) и банк живых нод
+  netctl subs add <url>             завести ссылку-подписку и сразу обновить
+  netctl subs rm|revive <url>       убрать / вернуть из отставки
+  netctl subs update|poll|log       прогнать обновление / забор ссылок / журнал
+    (требует SUB_ENABLE=\"1\" в kit.conf; ссылки можно слать боту и класть в манифест)
 
   netctl zapret on|off|edit|check
   netctl proxy  on|off
