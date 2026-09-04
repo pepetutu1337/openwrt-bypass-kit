@@ -104,11 +104,32 @@ ensure_deps() {
     # никто не блокирует — свой резолвер отдаст его вернее чужого.
     { cat /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | grep '^nameserver'
       echo 'nameserver 1.1.1.1'; } > /etc/resolv.conf
-    if [ "$PKG" = apk ]; then apk del dnsmasq 2>/dev/null || true; apk add --no-cache dnsmasq-full >/dev/null 2>&1
-    else opkg remove dnsmasq 2>/dev/null || true; opkg install dnsmasq-full >/dev/null 2>&1; fi
+    # Между удалением и установкой роутер остаётся без резолвера И без DHCP:
+    # если вторая команда не пройдёт (нет индекса пакетов, кончился overlay,
+    # молчит фид) — в доме не работает ничего, и лечится это только консолью.
+    # Поэтому: сохранить настройки DHCP, убедиться, что место есть, и при
+    # неудаче немедленно вернуть обычный dnsmasq, а не ехать дальше.
+    cp /etc/config/dhcp /tmp/dhcp.before-swap 2>/dev/null || true
+    free_kb=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$free_kb" ] && [ "$free_kb" -lt 2048 ]; then
+      err "на /overlay ${free_kb} КБ — для подмены dnsmasq нужно ~2 МБ. Не трогаю DNS."
+      miss=1
+    else
+      [ "$PKG" = apk ] && apk update >/dev/null 2>&1 || true
+      if [ "$PKG" = apk ]; then apk del dnsmasq >/dev/null 2>&1 || true; apk add --no-cache dnsmasq-full >/dev/null 2>&1 || true
+      else opkg remove dnsmasq >/dev/null 2>&1 || true; opkg install dnsmasq-full >/dev/null 2>&1 || true; fi
+      if ! dnsmasq --help 2>&1 | grep -q -- '--nftset'; then
+        err "dnsmasq-full не встал — возвращаю обычный dnsmasq, чтобы не оставить дом без DNS и DHCP"
+        pkg_add dnsmasq >/dev/null 2>&1 || true
+        [ -f /tmp/dhcp.before-swap ] && cp /tmp/dhcp.before-swap /etc/config/dhcp
+        miss=1
+      fi
+    fi
     ln -sf /tmp/resolv.conf.d/resolv.conf.auto /etc/resolv.conf 2>/dev/null || ln -sf /tmp/resolv.conf /etc/resolv.conf 2>/dev/null || true
     /etc/init.d/dnsmasq restart 2>/dev/null || true
-    dnsmasq --help 2>&1 | grep -q -- '--nftset' && ok "dnsmasq-full — поставлен" || { err "dnsmasq-full не встал"; miss=1; }
+    if dnsmasq --help 2>&1 | grep -q -- '--nftset'; then ok "dnsmasq-full — поставлен"
+    elif have dnsmasq; then warn "остался обычный dnsmasq: наборы nftset работать не будут"
+    else err "dnsmasq на роутере НЕТ — DNS и DHCP не поднимутся, чини консолью"; fi
   fi
   [ "$miss" = 0 ] && ok "все зависимости на месте" || { err "часть зависимостей не встала — см. выше"; return 1; }
 }
