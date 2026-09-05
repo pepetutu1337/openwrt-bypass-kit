@@ -47,6 +47,10 @@ mkdir -p "$DIR"
 tar xzf "$tmp/kit.tar.gz" -C "$DIR" --strip-components=1
 chmod +x "$DIR/bin/netctl" "$DIR/bin/netgui"* "$DIR/router/netkit" "$DIR/panel/rctl" 2>/dev/null || true
 cp -n "$DIR/config/nodes.list.example" "$DIR/config/nodes.list"
+# panel.conf в .gitignore, а без него panel/router/install.sh падает на входе
+# и сторожа (zapret-guard, rudns-guard, svcprobe, ytwatch, rescue) на роутер
+# не попадают вовсе — вся самопочинка остаётся не поставленной.
+cp -n "$DIR/panel/panel.conf.example" "$DIR/panel/panel.conf" 2>/dev/null || true
 
 say ""
 bold "Кит лежит в $DIR"
@@ -65,5 +69,9 @@ say ""
 say "  3. Поставить на роутер и проверить:"
 say "       $DIR/bin/netctl install"
 say "       $DIR/bin/netctl doctor"
+say ""
+say "  4. Сторожа и панель (самопочинка: следят и лечат сами):"
+say "       $DIR/panel/router/install.sh"
+say "     Без этого шага роутер работает, но чинить поломки придётся руками."
 say ""
 say "Подробно — $DIR/INSTALL.md"
