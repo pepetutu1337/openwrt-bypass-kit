@@ -550,21 +550,33 @@ zapret_install() {
   say "качаю и ставлю zapret $ZAPRET_VERSION в /opt/zapret"
   t=/tmp/zapret.tar.gz
   base="https://github.com/bol-van/zapret/releases/download/${ZAPRET_VERSION}"
+  # /opt на стоковом OpenWrt нет, base-files его не создаёт. Каталог нужен
+  # ДО проверки места: иначе df падает, free_kb пустой, и гейт молча
+  # пропускается — ровно на том роутере, ради которого он написан.
+  mkdir -p /opt
+  need_kb=6144   # хватает на embedded (4.4 МБ распакованными)
   # Сначала сборка для встраиваемых: 4.4 МБ распакованными против 15.2 МБ у
   # полного архива, где лежат бинари под android/mac/windows/freebsd. На
   # роутере с 30 МБ свободного overlay это разница между «встало» и
   # «флеш кончился посреди установки».
-  curl -fL "$base/zapret-${ZAPRET_VERSION}-openwrt-embedded.tar.gz" -o "$t" 2>/dev/null \
-    || curl -fL "$base/zapret-${ZAPRET_VERSION}.tar.gz" -o "$t" \
-    || { err "не скачался релиз zapret — поставь вручную (см. README)"; return 1; }
+  if sub_fetch "$base/zapret-${ZAPRET_VERSION}-openwrt-embedded.tar.gz" "$t"; then :
+  elif sub_fetch "$base/zapret-${ZAPRET_VERSION}.tar.gz" "$t"; then
+    need_kb=17408   # полный архив разворачивается в 15.2 МБ
+  else
+    err "не скачался релиз zapret — поставь вручную (см. README)"; return 1
+  fi
   free_kb=$(df -k /opt 2>/dev/null | awk 'NR==2 {print $4}')
-  if [ -n "$free_kb" ] && [ "$free_kb" -lt 6144 ]; then
-    err "на /opt ${free_kb} КБ — zapret не поместится. Освободи место и повтори."
+  if [ -n "$free_kb" ] && [ "$free_kb" -lt "$need_kb" ]; then
+    err "на /opt ${free_kb} КБ, нужно ${need_kb} — zapret не поместится. Освободи место и повтори."
     rm -f "$t"; return 1
   fi
-  mkdir -p /opt
   tar -xzf "$t" -C /opt || { err "архив zapret не распаковался (место на флеше?)"; rm -f "$t"; return 1; }
-  mv /opt/zapret-* /opt/zapret 2>/dev/null || true
+  # mv не годится: если /opt/zapret уже есть (битая прошлая установка), он
+  # уедет ВНУТРЬ как /opt/zapret/zapret-vXX — несколько мегабайт мусора на
+  # флеше, и ничего не починится.
+  if [ -d /opt/zapret ]; then cp -a /opt/zapret-*/. /opt/zapret/ 2>/dev/null || true
+  else mv /opt/zapret-* /opt/zapret 2>/dev/null || true; fi
+  rm -rf /opt/zapret-*
   rm -f "$t"
   # ставим сервис и firewall-хук неинтерактивно
   yes '' | /opt/zapret/install_easy.sh >/tmp/zapret-install.log 2>&1 || warn "install_easy.sh отработал с оговорками, см. /tmp/zapret-install.log"
@@ -617,16 +629,27 @@ restart_proxy() {
   # ядром. Юзер нужен root: tproxy-инбаунд требует CAP_NET_ADMIN, а
   # auto_detect_interface — CAP_NET_RAW, под непривилегированным ядро не
   # поднимается.
-  uci -q set sing-box.main.enabled='1'
-  uci -q set sing-box.main.user='root'
-  uci -q set sing-box.main.conffile="$SBOX"
-  uci -q commit sing-box
+  # uci пишем только если значение и правда другое: commit переписывает
+  # /etc/config/sing-box независимо от совпадения, а это флеш.
+  if [ "$(uci -q get sing-box.main.enabled)" != 1 ] \
+     || [ "$(uci -q get sing-box.main.user)" != root ] \
+     || [ "$(uci -q get sing-box.main.conffile)" != "$SBOX" ]; then
+    uci -q set sing-box.main.enabled='1'
+    uci -q set sing-box.main.user='root'
+    uci -q set sing-box.main.conffile="$SBOX"
+    uci -q commit sing-box
+  fi
   /etc/init.d/sing-box enable 2>/dev/null || true
   /etc/init.d/sing-box restart
-  sleep 2
-  # pidof, а не pgrep -x: на busybox роутера `pgrep -x sing-box` не находит
-  # живое ядро (проверено на работающем 21137 /usr/bin/sing-box run), и
-  # проверка валила бы установку на исправной системе. pidof находит.
+  # procd поднимает процесс не мгновенно, и на занятом роутере фиксированной
+  # паузы не хватает — ждём до шести секунд, иначе живое ядро объявляется
+  # мёртвым. pidof, а не pgrep -x: на busybox роутера pgrep -x не находит
+  # sing-box вовсе (проверено на работающем /usr/bin/sing-box run).
+  i=0
+  while [ "$i" -lt 6 ]; do
+    pidof sing-box >/dev/null 2>&1 && break
+    sleep 1; i=$((i+1))
+  done
   if pidof sing-box >/dev/null 2>&1; then
     ok "sing-box перезапущен"
   else
@@ -634,8 +657,7 @@ restart_proxy() {
     logread -e sing-box 2>/dev/null | tail -5
     return 1
   fi
-  fw_reload || true
-  ok "firewall перезагружен"
+  if fw_reload; then ok "firewall перезагружен"; fi
 }
 
 # ---------- geoblock: авто-список ушедших из РФ сервисов ----------
@@ -986,7 +1008,12 @@ deploy_scripts() {
 # =================== КОМАНДЫ ===================
 cmd_install() {
   ensure_deps || { err "останавливаюсь — сначала почини зависимости"; return 1; }
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy || return 1; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns
+    # Мёртвый прокси (чаще всего — кривая ссылка в nodes.list при первой
+    # установке) не должен лишать роутера всего остального: zapret, сторожа
+    # и списки ставятся дальше и дают человеку хоть какой-то обход.
+    restart_proxy || warn "прокси не поднялся — доставлю остальное, чинить: netctl doctor"
+  fi
   gen_quic
   gen_ipv6
   deploy_scripts
@@ -994,12 +1021,19 @@ cmd_install() {
   if [ "$PROXY_ENABLE" = 1 ] && [ "$SUB_ENABLE" = 1 ] && [ -x /usr/sbin/sub-update ]; then
     say "первое обновление подписок"; /usr/sbin/sub-update || warn "sub-update не прошёл — повторится по крону"
   fi
-  [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
+  # Не голым AND: zapret_apply теперь умеет вернуть 1, а последней командой
+  # в такой конструкции это оборвало бы весь apply через set -e.
+  [ "$ZAPRET_ENABLE" = 1 ] && { zapret_apply || warn "zapret не встал — остальное применено"; }
   fw_reload || true
   echo; say "готово. проверь: netctl status  и  netctl doctor"
 }
 cmd_apply() {
-  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns; restart_proxy || return 1; fi
+  if [ "$PROXY_ENABLE" = 1 ]; then gen_singbox || return 1; gen_nft; setup_calls; gen_doh; gen_dns
+    # Мёртвый прокси (чаще всего — кривая ссылка в nodes.list при первой
+    # установке) не должен лишать роутера всего остального: zapret, сторожа
+    # и списки ставятся дальше и дают человеку хоть какой-то обход.
+    restart_proxy || warn "прокси не поднялся — доставлю остальное, чинить: netctl doctor"
+  fi
   gen_quic
   gen_ipv6
   deploy_scripts
@@ -1008,7 +1042,9 @@ cmd_apply() {
   if [ "$PROXY_ENABLE" = 1 ] && [ "$SUB_ENABLE" = 1 ] && [ -x /usr/sbin/sub-update ]; then
     say "подтягиваю подписки"; /usr/sbin/sub-update || warn "sub-update не прошёл — повторится по крону"
   fi
-  [ "$ZAPRET_ENABLE" = 1 ] && zapret_apply
+  # Не голым AND: zapret_apply теперь умеет вернуть 1, а последней командой
+  # в такой конструкции это оборвало бы весь apply через set -e.
+  [ "$ZAPRET_ENABLE" = 1 ] && { zapret_apply || warn "zapret не встал — остальное применено"; }
   fw_reload || true
   say "применено."
 }
